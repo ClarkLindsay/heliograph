@@ -1,0 +1,140 @@
+# Tests, then builds the Docker image and publishes it to GitHub Container Registry (ghcr.io).
+#
+#   push to main        -> ghcr.io/<owner>/heliograph:edge   (+ :sha-<short>)
+#   push tag vX.Y.Z     -> :X.Y.Z, :X.Y, :X and :latest, plus a GitHub Release with the compose file attached
+#   pull request        -> tests and a test build only, nothing is published
+#
+# To release: bump __version__ in heliograph/__init__.py, commit, then
+#   git tag v0.2.0 && git push origin v0.2.0
+name: Build and publish
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: |
+          for t in tests/test_*.py; do
+            echo "::group::$t"
+            python "$t"
+            echo "::endgroup::"
+          done
+
+      - name: Check the tag matches __version__
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          code=$(python -c 'import heliograph; print(heliograph.__version__)')
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$code" != "$tag" ]; then
+            echo "::error::Tag v$tag doesn't match __version__ = $code in heliograph/__init__.py"
+            exit 1
+          fi
+
+  image:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to ghcr.io
+        if: github.event_name != 'pull_request'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Work out tags and labels
+        id: meta
+        uses: docker/metadata-action@v6
+        with:
+          images: ghcr.io/${{ github.repository }}
+          flavor: latest=false
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}},enable=${{ !startsWith(github.ref, 'refs/tags/v0.') }}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=edge,branch=main
+            type=sha
+          labels: |
+            org.opencontainers.image.title=Heliograph
+            org.opencontainers.image.description=Self-hosted one-way reading sync from Hardcover to Goodreads, StoryGraph, Fable, Pagebound and LibraryThing
+            org.opencontainers.image.licenses=MIT
+
+      - name: Build (and push unless this is a pull request)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: image
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Create the GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ github.ref_name }}
+          IMAGE: ghcr.io/${{ github.repository }}
+        run: |
+          version="${TAG#v}"
+          image=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')
+          cat > notes.md <<EOF
+          ## Docker image
+          \`\`\`sh
+          docker pull $image:$version
+          \`\`\`
+          Also tagged \`latest\`. Built for linux/amd64 and linux/arm64.
+
+          ## Install
+          Download \`docker-compose.yml\` (and optionally \`.env.example\`, renamed to \`.env\`) from the assets below
+          into an empty folder, then run \`docker compose up -d\`. See the
+          [Quick start](https://github.com/${{ github.repository }}#quick-start).
+
+          EOF
+          gh release create "$TAG" docker-compose.yml .env.example \
+            --title "Heliograph $version" \
+            --notes-file notes.md \
+            --generate-notes \
+            --verify-tag

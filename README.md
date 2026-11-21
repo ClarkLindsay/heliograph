@@ -122,11 +122,18 @@ your reading data.
 
 ## Quick start
 
-1. **Get the code**
-   ```sh
-   git clone https://github.com/ClarkLindsay/heliograph.git
-   cd heliograph
-   ```
+1. **Get the compose file.** Heliograph ships as a prebuilt image,
+   `ghcr.io/clarklindsay/heliograph`, for linux/amd64 and linux/arm64 (Raspberry Pi, Apple Silicon, most NAS boxes).
+   You only need `docker-compose.yml`. Pick one of these:
+   - **Download it**: make an empty folder and save `docker-compose.yml` (and optionally `.env.example`, renamed to
+     `.env`) into it from the [latest release](https://github.com/ClarkLindsay/heliograph/releases/latest).
+   - **Or clone the repo** (you need this to build from source; see [Building from source](#building-from-source)):
+     ```sh
+     git clone https://github.com/ClarkLindsay/heliograph.git
+     cd heliograph
+     ```
+
+   To try the image without compose, run `docker pull ghcr.io/clarklindsay/heliograph:latest`.
 
 2. **(Optional, recommended) turn on encryption** so the passwords and cookies you save are encrypted at rest. See
    [Protecting secrets](#protecting-secrets). It's easiest to do this before the first start.
@@ -136,11 +143,13 @@ your reading data.
 4. **Set your time zone** in `docker-compose.yml` (`TZ: Etc/UTC`, e.g. `America/New_York`). Finish dates are
    calculated in this time zone.
 
-5. **Build and start**
+5. **Start it**
    ```sh
-   docker compose up -d --build
+   docker compose up -d
    docker compose logs -f heliograph
    ```
+   This pulls the newest release. To pin a version, set `HELIOGRAPH_VERSION=0.1.0` in `.env`. Use `edge` for the
+   newest `main` branch build.
 
 6. **Open the web UI** at <http://localhost:8080> (or your chosen port), go to **Settings**, paste your
    **Hardcover API token**, then enable the services you use and fill in their credentials
@@ -435,10 +444,20 @@ plus its reading dates.
 
 ## Updating
 ```sh
-git pull
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
-Your data, settings and links are in the `heliograph-data` volume and survive rebuilds.
+If you pinned `HELIOGRAPH_VERSION` in `.env`, change it to the new version first. To be told about new versions, go to
+the GitHub repo and choose **Watch → Custom → Releases**.
+
+Building from source? Use `git pull` and then `docker compose up -d --build`.
+
+Your data, settings and links are in the `heliograph-data` volume and survive updates and rebuilds.
+
+### Building from source
+Clone the repo and add `build: .` under `services: heliograph:`, either in `docker-compose.yml` or in a gitignored
+`docker-compose.override.yml` ([see above](#keeping-personal-settings-out-of-git)). Then run `docker compose up -d --build`.
+Compose builds the image locally and gives it the same name, so nothing is pulled.
 
 > The compose file pins the project name (`name: heliograph`), so the volume is always `heliograph_heliograph-data`,
 > whatever the folder is called. You can move or rename the folder freely.
@@ -489,6 +508,22 @@ pip install -r requirements.txt
 python tests/test_engine.py && python tests/test_providers.py && python tests/test_librarything.py \
  && python tests/test_web.py && python tests/test_crypto.py && python tests/test_import_skip.py && python tests/test_import_retry.py
 ```
+
+The [Build and publish](.github/workflows/docker.yml) GitHub Action runs these tests on every push and pull request.
+
+### Releasing
+Images are built by GitHub Actions and published to `ghcr.io/clarklindsay/heliograph`:
+
+| Event | Image tags |
+|---|---|
+| Push to `main` | `edge`, `sha-<commit>` |
+| Push a tag `vX.Y.Z` | `X.Y.Z`, `X.Y`, `X` (from 1.0 on), `latest`. Also creates a GitHub Release with `docker-compose.yml` and `.env.example` attached |
+| Pull request | Tests and a test build only, nothing is published |
+
+To cut a release:
+1. Set `__version__` in `heliograph/__init__.py` (the workflow fails if it doesn't match the tag).
+2. Commit and push.
+3. Run `git tag v0.2.0` and then `git push origin v0.2.0`.
 
 **Stack:**
 - Python 3.12 standard-library HTTP server with a JSON API, and a single-file HTML/JS UI (`heliograph/web_index.html`).

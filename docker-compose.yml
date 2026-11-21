@@ -2,7 +2,11 @@ name: heliograph       # fixed project name, so the volume is always heliograph_
 
 services:
   heliograph:
-    build: .
+    # Prebuilt image from GitHub. Pin a version with HELIOGRAPH_VERSION in .env (e.g. 0.1.0); "edge" = latest main branch.
+    image: ghcr.io/clarklindsay/heliograph:${HELIOGRAPH_VERSION:-latest}
+    # Building from source instead? Uncomment the next line (or put it in docker-compose.override.yml),
+    # then run: docker compose up -d --build
+    # build: .
     container_name: heliograph
     restart: unless-stopped
     volumes:
