@@ -125,7 +125,7 @@ your reading data.
 1. **Get the compose file.** Heliograph ships as a prebuilt image,
    `ghcr.io/clarklindsay/heliograph`, for linux/amd64 and linux/arm64 (Raspberry Pi, Apple Silicon, most NAS boxes).
    You only need `docker-compose.yml`. Pick one of these:
-   - **Download it**: make an empty folder and save `docker-compose.yml` (and optionally `.env.example`, renamed to
+   - **Download it**: make an empty folder and save `docker-compose.yml` (and optionally `env.example`, saved as
      `.env`) into it from the [latest release](https://github.com/ClarkLindsay/heliograph/releases/latest).
    - **Or clone the repo** (you need this to build from source; see [Building from source](#building-from-source)):
      ```sh
@@ -517,7 +517,7 @@ Images are built by GitHub Actions and published to `ghcr.io/clarklindsay/heliog
 | Event | Image tags |
 |---|---|
 | Push to `main` | `edge`, `sha-<commit>` |
-| Push a tag `vX.Y.Z` | `X.Y.Z`, `X.Y`, `X` (from 1.0 on), `latest`. Also creates a GitHub Release with `docker-compose.yml` and `.env.example` attached |
+| Push a tag `vX.Y.Z` | `X.Y.Z`, `X.Y`, `X` (from 1.0 on), `latest`. Also creates a GitHub Release with `docker-compose.yml` and `env.example` attached |
 | Pull request | Tests and a test build only, nothing is published |
 
 To cut a release:

@@ -128,12 +128,14 @@ jobs:
           Also tagged \`latest\`. Built for linux/amd64 and linux/arm64.
 
           ## Install
-          Download \`docker-compose.yml\` (and optionally \`.env.example\`, renamed to \`.env\`) from the assets below
+          Download \`docker-compose.yml\` (and optionally \`env.example\`, saved as \`.env\`) from the assets below
           into an empty folder, then run \`docker compose up -d\`. See the
           [Quick start](https://github.com/${{ github.repository }}#quick-start).
 
           EOF
-          gh release create "$TAG" docker-compose.yml .env.example \
+          # Release asset names can't start with a dot (GitHub renames them "default.*"), so ship it as env.example.
+          cp .env.example env.example
+          gh release create "$TAG" docker-compose.yml env.example \
             --title "Heliograph $version" \
             --notes-file notes.md \
             --generate-notes \
