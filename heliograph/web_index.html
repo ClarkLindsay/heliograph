@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Heliograph</title>
+<link rel="icon" href="/icons/heliograph">
+<style>
+:root{--bg:#fff;--fg:#1c1c1e;--mut:#6b6b70;--line:#e1e1e6;--card:#f6f6f8;--acc:#2f6fed;--ok:#1f8a4c;--bad:#c62828;--warn:#b26a00;--grey:#7a7a80}
+@media (prefers-color-scheme:dark){:root{--bg:#161618;--fg:#ececef;--mut:#9a9aa2;--line:#2d2d31;--card:#202024;--acc:#6b9bff;--ok:#4cc27c;--bad:#ff7a70;--warn:#e0a040;--grey:#8a8a92}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif}
+header{display:flex;gap:16px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line);flex-wrap:wrap}
+header h1{font-size:17px;margin:0 8px 0 0}nav button{background:none;border:0;color:var(--mut);font:inherit;padding:6px 10px;cursor:pointer;border-radius:6px}
+nav button.on{color:var(--fg);background:var(--card)}main{max-width:1100px;margin:0 auto;padding:16px}
+button,input,select{font:inherit}button.btn{background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 11px;cursor:pointer}
+button.btn:hover{border-color:var(--acc)}button.pri{background:var(--acc);color:#fff;border-color:var(--acc)}button.danger{color:var(--bad)}
+input[type=text],input[type=password],input[type=number],select{background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:5px 8px;min-width:0}
+.row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.grow{flex:1}.mut{color:var(--mut)}.small{font-size:13px}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:10px;margin:12px 0}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px}.card h3{margin:0 0 4px;font-size:15px}
+pre{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px;overflow:auto;max-height:340px;font-size:12px;white-space:pre-wrap}
+table{width:100%;border-collapse:collapse}th,td{text-align:left;padding:7px 6px;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--mut);font-weight:500;font-size:13px}
+tr.book{cursor:pointer}tr.book:hover{background:var(--card)}
+.chip{display:inline-block;font-size:12px;padding:1px 7px;border-radius:10px;margin:1px 3px 1px 0;border:1px solid var(--line);color:var(--grey)}
+.chip.linked{color:var(--ok);border-color:var(--ok)}.flag{color:var(--bad)}.chip.nomatch,.chip.error{color:var(--bad);border-color:var(--bad)}.chip.skip{text-decoration:line-through}.chip.recorded{color:var(--acc);border-color:var(--acc)}
+.bar{height:6px;background:var(--line);border-radius:3px;overflow:hidden;min-width:80px}.bar i{display:block;height:100%;background:var(--acc)}
+.modal{position:fixed;inset:0;background:#0008;display:flex;align-items:flex-start;justify-content:center;overflow:auto;padding:24px 10px}
+.sheet{background:var(--bg);border:1px solid var(--line);border-radius:12px;max-width:760px;width:100%;padding:16px}
+.svc{border-top:1px solid var(--line);padding:12px 0}.cand{display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px dashed var(--line)}
+.field{display:grid;grid-template-columns:minmax(150px,230px) 1fr;gap:8px;align-items:center;margin:7px 0}
+.msg{margin:8px 0;padding:8px 10px;border-radius:8px;background:var(--card)}.msg.bad{color:var(--bad)}.msg.good{color:var(--ok)}
+a{color:var(--acc)}.ico{border-radius:6px;vertical-align:middle;margin-right:6px}.thumb{width:48px;height:72px;object-fit:cover;border-radius:4px;background:var(--card);flex:none}.cover{width:64px;height:96px;object-fit:cover;border-radius:5px;background:var(--card);margin-right:12px;flex:none}.msg.warn{color:var(--warn)}.prog{margin:8px 0}@media(max-width:600px){.field{grid-template-columns:1fr}}
+</style></head><body>
+<header><img src="/icons/heliograph" width="26" height="26" alt="" style="border-radius:6px"><h1>Heliograph</h1><nav id="nav"></nav><span class="grow"></span><span id="top" class="mut small"></span></header>
+<main id="main"></main><div id="modal"></div>
+<script>
+const $=s=>document.querySelector(s);
+function h(tag,attrs,...kids){const e=document.createElement(tag);for(const[k,v]of Object.entries(attrs||{})){if(k==='class')e.className=v;else if(k.startsWith('on'))e.addEventListener(k.slice(2),v);else if(v===true)e.setAttribute(k,'');else if(v!==false&&v!=null)e.setAttribute(k,v)}
+ for(const c of kids.flat())if(c!=null&&c!==false)e.append(c.nodeType?c:document.createTextNode(String(c)));return e}
+function fill(el,...c){el.replaceChildren(...c.flat().filter(x=>x!=null&&x!==false))}
+function put(el,...c){c.flat().filter(x=>x!=null&&x!==false).forEach(x=>el.append(x))}
+async function api(path,body){const o=body===undefined?{}:{method:'POST',headers:{'X-Requested-With':'heliograph-ui','Content-Type':'application/json'},body:JSON.stringify(body)};
+ const r=await fetch(path,o);let j={};try{j=await r.json()}catch(e){}if(!r.ok)throw new Error(j.error||('HTTP '+r.status));return j}
+const ago=t=>{if(!t)return'never';const s=Math.max(0,Date.now()/1000-t);return s<90?Math.round(s)+'s ago':s<5400?Math.round(s/60)+'m ago':s<172800?Math.round(s/3600)+'h ago':Math.round(s/86400)+'d ago'};
+const LAB={linked:'linked',nomatch:'no match',error:'error',skip:'skipped',recorded:'recorded',pending:'pending'};
+let tab='dash',timer=null,tabToken=0,onClose=null,svcLabels={},svcHome={},savedMsg=null;
+let imp={services:null,statuses:new Set(['reading','read','want']),dry:true,skip:true};
+const BRAND={hardcover:['#2b2d42','H'],goodreads:['#5b4636','g'],storygraph:['#1a9aa3','S'],fable:['#7b4fd6','F'],pagebound:['#2f6fed','P'],librarything:['#3b6ea5','L']};
+function mono(key){const b=BRAND[key]||['#666',(key||'?')[0].toUpperCase()];const svg=`<svg xmlns='http://www.w3.org/2000/svg' width='64' height='64'><rect width='64' height='64' rx='14' fill='${b[0]}'/><text x='32' y='45' font-family='Georgia,serif' font-size='38' font-weight='700' text-anchor='middle' fill='#fff'>${b[1]}</text></svg>`;return 'data:image/svg+xml,'+encodeURIComponent(svg)}
+const safeUrl=u=>/^https?:\/\/\S+$/.test(u||'');
+function homeIcon(x,px){const i=icon(x.key,px||22);return safeUrl(x.home)?h('a',{href:x.home,target:'_blank',rel:'noopener noreferrer',title:'Open '+x.label},i):i}
+function icon(key,px){const i=h('img',{src:'/icons/'+key,width:px,height:px,alt:'',class:'ico'});let done=false;i.addEventListener('error',()=>{if(!done){done=true;i.setAttribute('src',mono(key))}});return i}
+function setTab(t){tab=t;tabToken++;clearTimeout(timer);timer=null;onClose=null;$('#nav').replaceChildren(...[['dash','Dashboard'],['books','Books'],['import','Import'],['settings','Settings']].map(([k,l])=>h('button',{class:tab===k?'on':'',onclick:()=>setTab(k)},l)));
+ ({dash:dash,books:books,import:importTab,settings:settings})[t]()}
+function note(el,text,cls){el.replaceChildren(h('div',{class:'msg '+(cls||'')},text))}
+
+/* Pages are built once and then updated in place (text, bars, lists whose content changed), so periodic refreshes
+   never rebuild the DOM: no flicker, scroll positions and typed input survive. tabToken drops answers that arrive after a tab switch. */
+function loop(fn,tok){async function tick(){if(tok!==tabToken)return;let d=8000;try{d=(await fn())||8000}catch(e){}if(tok===tabToken)timer=setTimeout(tick,d)}tick()}
+function setText(el,t){t=String(t==null?'':t);if(el.textContent!==t)el.textContent=t}
+function sigOf(x){return JSON.stringify(x)}
+function closeModal(){$('#modal').replaceChildren();if(onClose)onClose()}
+
+function dash(){const m=$('#main'),tok=tabToken;let ui=null;fill(m,h('p',{class:'mut'},'Loading…'));
+ function build(){
+  const u={res:h('div'),sum:h('span'),nxt:h('span',{class:'mut small'}),sec:h('div',{class:'msg warn small',style:'display:none'}),cnt:h('p',{class:'mut small'}),
+   imp:h('div',{class:'msg small',style:'display:none'}),cards:h('div',{class:'cards'}),pre:h('pre',{},'…'),refs:{},keys:'',logTxt:null};
+  u.impText=h('span');u.imp.append(u.impText,' ',h('a',{href:'#',onclick:e=>{e.preventDefault();setTab('import')}},'Open the Import tab'));
+  fill(m,h('div',{class:'row'},h('b',{},'Last cycle: '),u.sum,h('span',{class:'grow'}),u.nxt,
+     h('button',{class:'btn pri',onclick:async()=>{try{await api('/api/sync',{});note(u.res,'Sync requested.','good');setTimeout(()=>tok===tabToken&&refresh(),3000)}catch(e){note(u.res,e.message,'bad')}}},'Sync now'),
+     h('button',{class:'btn',onclick:async e=>{e.target.disabled=true;try{const r=await api('/api/refresh-library',{});note(u.res,`Library refreshed: ${r.books} books.`,'good')}catch(x){note(u.res,x.message,'bad')}e.target.disabled=false}},'Refresh library')),
+   u.sec,u.imp,u.res,u.cnt,u.cards,h('h3',{},'Recent log'),u.pre);return u}
+ function cards(s){const list=[{key:'hardcover',label:'Hardcover (source)',enabled:true,counts:null,home:s.hardcover_home},...s.services];
+  const keys=list.map(x=>x.key+'|'+x.home).join();
+  if(keys!==ui.keys){ui.keys=keys;ui.refs={};fill(ui.cards,list.map(x=>{const r={state:h('div',{class:'small'}),counts:h('div',{class:'small mut'})};ui.refs[x.key]=r;const out=h('div',{class:'small mut'});
+    return h('div',{class:'card'},h('h3',{},homeIcon(x,22),x.label),r.state,r.counts,h('div',{class:'row',style:'margin-top:8px'},h('button',{class:'btn small',onclick:async e=>{e.target.disabled=true;out.textContent='Testing…';
+      try{const t=await api('/api/test/'+x.key,{});out.textContent=(t.ok?'✓ ':'✗ ')+t.message}catch(err){out.textContent='✗ '+err.message}e.target.disabled=false}},'Test login')),out)}))}
+  list.forEach(x=>{const r=ui.refs[x.key];setText(r.state,x.enabled?'enabled':'disabled');r.state.className='small '+(x.enabled?'':'mut');
+   setText(r.counts,x.counts?`${x.counts.linked} linked · ${x.counts.nomatch} no match · ${x.counts.error} errors`+(x.counts.skip?` · ${x.counts.skip} skipped`:''):'')})}
+ async function refresh(){const s=await api('/api/status');if(tok!==tabToken)return 8000;if(!ui)ui=build();
+  s.services.forEach(x=>{svcLabels[x.key]=x.label;svcHome[x.key]=x.home});svcHome.hardcover=s.hardcover_home;
+  const next=s.next_run?Math.round(s.next_run-s.now):0;
+  setText($('#top'),s.running?'syncing…':'last cycle '+ago(s.last_end));
+  setText(ui.sum,s.last_end?`${s.examined} book(s) examined, ${s.pushed} update(s) pushed — ${s.result}`:s.result);
+  setText(ui.nxt,next>0?`next in ~${Math.ceil(next/60)} min (every ${s.poll_minutes} min)`:'');
+  const pl=s.secrets&&s.secrets.plaintext;ui.sec.style.display=pl?'':'none';setText(ui.sec,pl?`${pl} secret(s) are stored unencrypted in config.json. See README → Protecting secrets.`:'');
+  const j=s.job||{};ui.imp.style.display=j.running?'':'none';if(j.running)setText(ui.impText,`${j.dry?'Preview':'Import'} running: ${j.done}/${j.total} books — ${j.message||''}.`);
+  setText(ui.cnt,`${s.books} books known from Hardcover.`);cards(s);
+  const l=await api('/api/log?n=150');if(tok!==tabToken)return 8000;const txt=l.lines.join('\n');
+  if(txt!==ui.logTxt){const atEnd=ui.logTxt===null||ui.pre.scrollTop+ui.pre.clientHeight>=ui.pre.scrollHeight-24;ui.logTxt=txt;ui.pre.textContent=txt;if(atEnd)ui.pre.scrollTop=ui.pre.scrollHeight}
+  return j.running?3000:8000}
+ dash.refresh=refresh;
+ loop(async()=>{try{return await refresh()}catch(e){if(!ui)fill(m,h('div',{class:'msg bad'},e.message));else note(ui.res,e.message,'bad');return 8000}},tok)}
+
+function importTab(){const m=$('#main'),tok=tabToken;let ui=null;fill(m,h('p',{class:'mut'},'Loading…'));
+ const LBL={reading:'Reading',read:'Read',want:'Want to read',paused:'Paused',dnf:'Did not finish'};
+ function build(s){
+  const en=s.services.filter(x=>x.enabled);if(!imp.services)imp.services=new Set(en.map(x=>x.key));
+  const u={inputs:[],out:h('div'),bar:h('i',{style:'width:0%'}),msg:h('div',{class:'small'}),stats:h('div',{class:'small'}),recent:h('pre',{style:'display:none;max-height:150px'}),
+   unm:h('div'),fail:h('div'),dl:h('div',{class:'row',style:'margin:8px 0'}),sigs:{}};
+  const box=(label,set,key)=>{const i=h('input',{type:'checkbox',checked:set.has(key),onchange:e=>{e.target.checked?set.add(key):set.delete(key)}});u.inputs.push(i);return h('label',{class:'small',style:'margin-right:12px'},i,' '+label)};
+  const chk=(get,set)=>{const i=h('input',{type:'checkbox',checked:get(),onchange:e=>set(e.target.checked)});u.inputs.push(i);return i};
+  u.start=h('button',{class:'btn pri',disabled:!en.length,onclick:async()=>{
+    if(!imp.dry&&!confirm('Import will write to your selected services for every matching book. Continue?'))return;
+    try{await api('/api/import',{services:[...imp.services],statuses:[...imp.statuses],dry:imp.dry,skip_existing:imp.skip});setTimeout(()=>tok===tabToken&&u.refresh(),300)}catch(e){note(u.out,e.message,'bad')}}},'Start preview');
+  u.cancel=h('button',{class:'btn danger',style:'display:none',onclick:async()=>{try{await api('/api/import/cancel',{});setTimeout(()=>tok===tabToken&&u.refresh(),300)}catch(e){note(u.out,e.message,'bad')}}},'Cancel');
+  u.retry=h('button',{class:'btn',style:'display:none',onclick:async()=>{try{await api('/api/import/retry-failed',{});setTimeout(()=>tok===tabToken&&u.refresh(),300)}catch(e){note(u.out,e.message,'bad')}}},'Retry failed');
+  const prevBox=chk(()=>imp.dry,v=>{imp.dry=v;setText(u.start,v?'Start preview':'Start import')});
+  u.dl.append(h('a',{class:'btn',href:'/api/import/log?fmt=txt',download:''},'Download log (.txt)'),h('a',{class:'btn',href:'/api/import/log?fmt=csv',download:''},'Download results (.csv)'));u.dl.style.display='none';
+  fill(m,h('div',{class:'card'},h('h3',{},'Import library'),
+   h('p',{class:'small mut'},'Re-sends every Hardcover book’s status, progress, rating and finish date to the selected services. It can take a long time (many requests per book) and writes to your accounts, so run a preview first. Books are processed one at a time, so normal syncing keeps working. Failed items are retried automatically (a few times per item, then again at the end); books that can’t be matched are flagged in the Books tab so you can link them by hand.'),
+   h('div',{class:'row'},en.length?en.map(x=>box(x.label,imp.services,x.key)):h('span',{class:'mut small'},'No services enabled')),
+   h('div',{class:'row',style:'margin-top:4px'},['reading','read','want','paused','dnf'].map(k=>box(LBL[k],imp.statuses,k))),
+   h('div',{style:'margin-top:6px'},h('label',{class:'small'},chk(()=>imp.skip,v=>{imp.skip=v}),' Skip books that are already up to date on the service'),h('div',{class:'small mut',style:'margin-left:22px'},'Compares shelf, and where the service lets us read it back: rating (Goodreads*, StoryGraph, Fable) and finish date (Goodreads, Pagebound, LibraryThing). Anything that can’t be read is assumed correct. *when the page exposes it.')),
+   h('div',{class:'row',style:'margin-top:6px'},h('label',{class:'small'},prevBox,' Preview only (don’t change anything)'),h('span',{class:'grow'}),u.retry,u.cancel,u.start),u.out),
+   h('div',{class:'prog'},h('div',{class:'bar'},u.bar),u.msg,u.stats,u.recent,u.dl),u.unm,u.fail);
+  setText(u.start,imp.dry?'Start preview':'Start import');return u}
+ function list(el,key,items,title,hint,row){const sg=sigOf(items);if(ui.sigs[key]===sg)return;ui.sigs[key]=sg;
+  fill(el,items.length?h('div',{class:'card',style:'margin-top:12px'},h('h3',{},`${title} (${items.length})`),h('p',{class:'small mut'},hint),items.map(row)):null)}
+ async function refresh(){const s=await api('/api/status');if(tok!==tabToken)return 8000;if(!ui){ui=build(s);ui.refresh=refresh}
+  s.services.forEach(x=>{svcLabels[x.key]=x.label;svcHome[x.key]=x.home});
+  const j=s.job||{running:false};const pct=j.total?Math.round(100*j.done/j.total):0;
+  ui.inputs.forEach(i=>{i.disabled=!!j.running});
+  ui.start.style.display=j.running?'none':'';ui.cancel.style.display=j.running?'':'none';
+  ui.retry.style.display=j.can_retry?'':'none';setText(ui.retry,j.can_retry?`Retry failed (${(j.failed_items||[]).length})`:'');
+  ui.bar.style.width=pct+'%';
+  setText(ui.msg,j.started?j.message||'':'');
+  setText(ui.stats,j.started?`${j.done}/${j.total} books · ${j.pushed} update(s)${j.dry?' would be sent':' sent'} · ${j.errors||0} error(s) · ${j.nomatch||0} unmatched`+(j.skip_existing?` · ${j.skipped||0} already up to date`:'')+(j.services?` (${j.services.join(', ')})`:''):'');
+  const rc=j.running&&j.recent&&j.recent.length;ui.recent.style.display=rc?'':'none';if(rc)setText(ui.recent,j.recent.join('\n'));
+  ui.dl.style.display=j.log_available?'':'none';
+  list(ui.unm,'u',j.unmatched||[],'⚑ Not matched','No confident match was found on these services. Open one, press “Find edition…” on that service, and pick or paste the right edition. They are also flagged in the Books tab.',
+    i=>h('div',{class:'cand'},h('div',{class:'grow'},h('b',{},i.title),h('div',{class:'small mut'},i.authors+' · '+i.label)),h('button',{class:'btn small pri',onclick:()=>openBook(i.id)},'Link manually…')));
+  list(ui.fail,'f',j.failed_items||[],'Failed','These errored even after automatic retries. “Retry failed” runs just these again.',
+    i=>h('div',{class:'cand'},h('div',{class:'grow'},h('b',{},i.title),h('div',{class:'small mut'},i.authors+' · '+i.label),h('div',{class:'small',style:'color:var(--bad)'},i.error)),h('button',{class:'btn small',onclick:()=>openBook(i.id)},'Open')));
+  return j.running?2000:8000}
+ onClose=()=>{if(ui)refresh().catch(()=>{})};
+ loop(async()=>{try{return await refresh()}catch(e){if(!ui)fill(m,h('div',{class:'msg bad'},e.message));return 8000}},tok)}
+
+let bq={q:'',status:'',flag:'',offset:0};
+async function books(){const m=$('#main'),tok=tabToken;
+ const q=h('input',{type:'text',placeholder:'Search title or author',value:bq.q,class:'grow',onkeydown:e=>{if(e.key==='Enter')go()}});
+ const st=h('select',{},...[['','All statuses'],['reading','Reading'],['want','Want to read'],['read','Read'],['paused','Paused'],['dnf','Did not finish']].map(([v,l])=>h('option',{value:v,selected:bq.status===v},l)));
+ const fl=h('select',{},...[['','All books'],['any','Needs attention (no match / errors)'],['nomatch','⚑ Flagged: no match']].map(([v,l])=>h('option',{value:v,selected:bq.flag===v},l)));
+ const out=h('div');let sig='',loaded=0,tbody=null;
+ function go(){bq={q:q.value,status:st.value,flag:fl.value,offset:0};load('reset')}
+ const rowFor=b=>{const nm=Object.values(b.services).some(v=>v.state==='nomatch');return h('tr',{class:'book',onclick:()=>openBook(b.id)},
+   h('td',{},nm?h('span',{class:'flag',title:'No match on at least one service: open it to link the right edition'},'⚑ '):null,h('b',{},b.title),h('div',{class:'small mut'},b.authors.join(', '))),
+   h('td',{class:'small'},b.status||'—'),
+   h('td',{class:'small'},b.status==='reading'&&b.pages!=null?[`p.${b.pages}${b.total_pages?'/'+b.total_pages:''}`,b.percent!=null?h('div',{class:'bar'},h('i',{style:`width:${b.percent}%`})):null]:(b.rating?'★ '+b.rating:'')),
+   h('td',{},Object.entries(b.services).map(([k,v])=>h('span',{class:'chip '+v.state,title:(LAB[v.state]||v.state)+(v.error?': '+v.error:'')},(svcLabels[k]||k)+(v.state==='linked'?'':' · '+LAB[v.state])))))};
+ function more(total){let mo=out.querySelector('.more');if(mo)mo.remove();if(loaded<total)out.append(h('p',{class:'more'},h('button',{class:'btn',onclick:()=>load('more')},`Show more (${total-loaded} left)`)))}
+ async function load(mode){try{
+  const off=mode==='more'?loaded:0,limit=mode==='refresh'?Math.min(200,Math.max(50,loaded)):50;
+  if(mode==='refresh'&&loaded>200)return;
+  const p=new URLSearchParams({q:bq.q,status:bq.status,problems:bq.flag==='nomatch'?'nomatch':bq.flag==='any'?'1':'0',offset:off,limit});const r=await api('/api/books?'+p);if(tok!==tabToken)return;
+  if(mode==='more'){r.books.forEach(b=>tbody.append(rowFor(b)));loaded+=r.books.length;sig='';more(r.total);return}
+  const sg=sigOf([r.total,r.books]);if(mode==='refresh'&&sg===sig)return;sig=sg;loaded=r.books.length;
+  if(!r.total){tbody=null;out.replaceChildren(h('p',{class:'mut'},bq.flag?'Nothing flagged. ':'No books match. If this is empty, use Dashboard → Refresh library.'));return}
+  const rows=r.books.map(rowFor);
+  if(tbody&&out.contains(tbody))tbody.replaceChildren(...rows);
+  else{tbody=h('tbody',{},rows);out.replaceChildren(h('div',{class:'small mut',style:'margin:6px 0'},`${r.total} book(s)`),h('table',{},h('thead',{},h('tr',{},h('th',{},'Book'),h('th',{},'Status'),h('th',{},'Progress / rating'),h('th',{},'Services'))),tbody))}
+  const cnt=out.firstChild;if(cnt&&cnt.className&&cnt.className.includes('small'))setText(cnt,`${r.total} book(s)`);more(r.total)
+ }catch(e){if(mode!=='refresh')out.replaceChildren(h('div',{class:'msg bad'},e.message))}}
+ fill(m,h('div',{class:'row'},q,st,fl,h('button',{class:'btn pri',onclick:go},'Search')),out);
+ if(!Object.keys(svcLabels).length){try{(await api('/api/status')).services.forEach(x=>{svcLabels[x.key]=x.label;svcHome[x.key]=x.home})}catch(e){}}
+ await load('reset');
+ if(tok===tabToken)onClose=()=>load('refresh');
+ loop(async()=>{if(!document.querySelector('.modal *'))await load('refresh');return 20000},tok)}
+
+async function openBook(id){const md=$('#modal');const flash={};let cover=null,pushAll=null;api(`/api/book/${id}/cover`).then(r=>{if(r.url){cover=r.url;const el=document.querySelector('#hccover');if(el)el.setAttribute('src',r.url)}}).catch(()=>{});
+ async function draw(b){md.replaceChildren(h('div',{class:'modal',onclick:e=>{if(e.target.className==='modal'){closeModal()}}},h('div',{class:'sheet'},
+  h('div',{class:'row',style:'flex-wrap:nowrap'},h('img',{id:'hccover',class:'cover',alt:'',referrerpolicy:'no-referrer',src:cover||'data:image/gif;base64,R0lGODlhAQABAAAAACw='}),h('div',{class:'grow'},h('h2',{style:'margin:0'},b.title),h('div',{class:'mut'},b.authors.join(', '))),h('button',{class:'btn',onclick:()=>{closeModal()}},'Close')),
+  h('p',{class:'small'},'Hardcover: ',h('b',{},b.status||'—'),b.pages!=null?` · page ${b.pages}${b.total_pages?' of '+b.total_pages:''}`:'',b.rating?` · rated ${b.rating}`:'',b.finished_on?` · finished ${b.finished_on}`:''),
+  h('div',{class:'row',style:'margin:6px 0'},h('button',{class:'btn pri',onclick:async e=>{e.target.disabled=true;try{const r=await api(`/api/book/${b.id}/push-all`,{});pushAll=r.results;draw(r.book)}catch(x){pushAll=[{label:'Error',ok:false,error:x.message}];draw(b)}}},'Push to all services'),h('span',{class:'small mut'},'sends this book’s current status, progress and rating everywhere')),
+  pushAll?h('div',{class:'msg small'},pushAll.map(r=>h('div',{},(r.ok?'✓ ':'✗ ')+r.label+': '+(r.ok?(r.pushed?`pushed ${r.pushed} update(s)`:(r.linked?'nothing needed pushing':'no match found yet')):r.error)))):null,
+  Object.entries(b.services).map(([k,v])=>svc(b,k,v)))))}
+ function svc(b,k,v){const box=h('div',{class:'svc'}),res=h('div'),pick=h('div');if(flash[k]){note(res,flash[k].t,flash[k].c);delete flash[k]}
+  const act=async(path,body,after)=>{try{const r=await api(path,body);if(after)after(r);else draw(r)}catch(e){note(res,e.message,'bad')}};
+  put(box,h('div',{class:'row'},homeIcon({key:k,label:svcLabels[k]||k,home:svcHome[k]},20),h('b',{},svcLabels[k]||k),h('span',{class:'chip '+v.state},LAB[v.state]||v.state),v.manual?h('span',{class:'small mut'},'(manual link)'):null,
+    v.url?h('a',{href:v.url,target:'_blank',rel:'noopener noreferrer',class:'small'},'open ↗'):null,h('span',{class:'grow'}),v.pushed_at?h('span',{class:'small mut'},'last pushed '+ago(v.pushed_at)):null),
+   v.remote_id?h('div',{class:'small mut'},'id: '+v.remote_id):null,v.error?h('div',{class:'small',style:'color:var(--bad)'},v.error):null,
+   h('div',{class:'row',style:'margin-top:6px'},
+    h('button',{class:'btn small',onclick:()=>search()},'Find edition…'),
+    h('button',{class:'btn small',disabled:!v.remote_id&&v.state!=='pending'&&v.state!=='recorded'&&v.state!=='nomatch'&&v.state!=='error',onclick:()=>act(`/api/book/${b.id}/${k}/push`,{},r=>{flash[k]={t:r.result.error?('Failed: '+r.result.error):(r.result.pushed?`Pushed ${r.result.pushed} update(s).`:(r.result.linked?'Nothing needed pushing.':'No match found yet.')),c:r.result.error?'bad':'good'};draw(r.book)})},'Push current status now'),
+    v.remote_id?h('button',{class:'btn small danger',onclick:()=>act(`/api/book/${b.id}/${k}/unlink`,{})},'Unlink'):null,
+    h('button',{class:'btn small',onclick:()=>act(`/api/book/${b.id}/${k}/skip`,{skip:v.state!=='skip'})},v.state==='skip'?'Stop skipping':'Skip this service for this book')),res,pick);
+  function search(){
+   const q=h('input',{type:'text',class:'grow',value:[b.title,...b.authors].join(' ')});
+   const paste=h('input',{type:'text',class:'grow',placeholder:'…or paste a book URL / id from '+(svcLabels[k]||k)});
+   const list=h('div');
+   const candRow=c=>h('div',{class:'cand'},
+     c.cover?h('img',{class:'thumb',src:c.cover,alt:'',loading:'lazy',referrerpolicy:'no-referrer'}):h('div',{class:'thumb'}),
+     h('div',{class:'grow'},h('b',{},c.title),h('div',{class:'small mut'},c.authors.join(', ')+(c.pages?' · '+c.pages+' pages':'')+(k==='pagebound'?' · '+c.id:''))),
+     c.url?h('a',{href:c.url,target:'_blank',rel:'noopener noreferrer',class:'small'},'open ↗'):null,
+     h('button',{class:'btn small pri',onclick:()=>act(`/api/book/${b.id}/${k}/link`,{candidate:c.raw})},'Use this'));
+   const run=async()=>{
+     note(list,'Searching…');
+     try{const r=await api(`/api/book/${b.id}/${k}/search`,{query:q.value});
+       list.replaceChildren(...(r.results.length?r.results.map(candRow):[h('p',{class:'mut'},'No results.')]))}
+     catch(e){note(list,e.message,'bad')}};
+   pick.replaceChildren(
+     h('div',{class:'row',style:'margin-top:8px'},q,h('button',{class:'btn',onclick:run},'Search')),list,
+     h('div',{class:'row',style:'margin-top:6px'},paste,h('button',{class:'btn',onclick:()=>act(`/api/book/${b.id}/${k}/link`,{ref:paste.value})},'Link')),
+     h('p',{class:'small mut'},'After linking, use “Push current status now” to send this book’s current status, progress and rating.'));
+   run()}
+  return box}
+ try{draw(await api('/api/book/'+id))}catch(e){md.replaceChildren(h('div',{class:'modal',onclick:()=>md.replaceChildren()},h('div',{class:'sheet'},h('div',{class:'msg bad'},e.message))))}}
+
+async function settings(){const m=$('#main');m.replaceChildren(h('p',{class:'mut'},'Loading…'));
+ try{const s=await api('/api/settings');const stt=await api('/api/status').catch(()=>({}));const res=h('div');const inputs=[];
+  const sec=s.sections.map(S=>h('div',{class:'card',style:'margin-bottom:12px'},h('div',{class:'row'},h('h3',{class:'grow'},S.label),
+    S.section==='hardcover'||['goodreads','storygraph','fable','pagebound','librarything'].includes(S.section)?h('button',{class:'btn small',onclick:async e=>{const o=e.target.nextSibling;o.textContent='Testing… (save first if you changed something)';try{const r=await api('/api/test/'+S.section,{});o.textContent=(r.ok?'✓ ':'✗ ')+r.message}catch(x){o.textContent='✗ '+x.message}}},'Test login'):null,h('span',{class:'small mut'})),
+   S.fields.map(f=>{let inp;const name=S.section+'.'+f.key;
+     if(f.kind==='bool')inp=h('input',{type:'checkbox',checked:!!f.value,disabled:f.locked});
+     else if(f.kind.startsWith('choice:'))inp=h('select',{disabled:f.locked},...f.kind.slice(7).split(',').map(o=>h('option',{value:o,selected:f.value===o},o)));
+     else if(f.kind==='int')inp=h('input',{type:'number',min:0,value:f.value,disabled:f.locked});
+     else if(f.kind==='secret')inp=h('input',{type:'password',autocomplete:'new-password',placeholder:f.set?'•••••• (saved — leave blank to keep)':'not set',disabled:f.locked});
+     else inp=h('input',{type:'text',value:f.value||'',disabled:f.locked});
+     inputs.push({S:S.section,f,inp});
+     return h('div',{class:'field'},h('label',{},f.label),h('div',{class:'row'},inp,f.kind==='secret'&&f.set&&!f.locked?h('button',{class:'btn small danger',onclick:()=>{inp.value='__clear__';inp.type='text'}},'Clear'):null,f.locked?h('span',{class:'small mut'},'set by environment variable'):null))})));
+  if(savedMsg){note(res,savedMsg.t,savedMsg.c);savedMsg=null}
+  fill(m,stt.secrets?h('div',{class:'msg small '+(stt.secrets.encrypted?'good':'warn')},stt.secrets.encrypted?'Secrets are stored encrypted in config.json.':'Secrets saved here are stored unencrypted in config.json — '+(stt.secrets.detail||'no key configured')+'. See README → Protecting secrets.'):null,h('p',{class:'mut small'},'Changes apply on the next sync cycle. A newly enabled service first records your current library (nothing is pushed) unless “First run” is set to import_all. Secrets are never shown here.'),...sec,
+   h('div',{class:'row'},h('button',{class:'btn pri',onclick:async()=>{const body={};for(const{S,f,inp}of inputs){if(f.locked)continue;const v=f.kind==='bool'?inp.checked:inp.value;body[S]=body[S]||{};body[S][f.key]=v}
+     try{const r=await api('/api/settings',body);savedMsg={t:r.saved?`Saved ${r.saved} change(s).`+(r.notes.length?' '+r.notes.join('; '):''):'No changes.'+(r.notes.length?' '+r.notes.join('; '):''),c:'good'};settings()}catch(e){note(res,e.message,'bad')}}},'Save settings')),res)
+ }catch(e){m.replaceChildren(h('div',{class:'msg bad'},e.message))}}
+setTab('dash');
+</script></body></html>

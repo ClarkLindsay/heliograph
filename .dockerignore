@@ -1,0 +1,10 @@
+tests
+*.zip
+__pycache__
+README.md
+.git
+.env
+.env.example
+secrets
+icons
+docker-compose*.yml

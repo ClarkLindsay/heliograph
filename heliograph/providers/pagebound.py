@@ -1,0 +1,239 @@
+"""Pagebound via Firebase login + token exchange, ported from ShelfSync's pagebound/api.lua."""
+import re, time
+from datetime import datetime
+import requests
+from . import firebase
+from .base import Provider, AuthError, ProviderError, Match, mapped_page, clean_cover
+
+API = "https://prod-pagebound-api.onrender.com"
+FIREBASE_KEY = "AIzaSyDCfBJ51pRZgHueBfBz0KNDiPNev1ClnGg"
+TYPESENSE_URL = "https://hztadco4ku1vqi6lp.a1.typesense.net"
+TYPESENSE_KEY = "SgSrp2Vx4V4wjJAwnME6uWUufNdi9BxM"
+SIGN_IN = "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword"
+SYSTEM = {"want": "interested", "reading": "current", "read": "finished", "paused": "paused", "dnf": "dnf"}
+STATUS_BY = {v: k for k, v in SYSTEM.items()}
+UA = "HardcoverSync/0.2 (ShelfSync-compatible)"
+
+
+def pb_date():
+    n = datetime.now()
+    return f"{n.month}/{n.day}/{n.year}"          # un-padded m/d/Y, as Pagebound's own requests
+
+
+def form_date(v):
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})", str(v or ""))
+    return f"{int(m.group(2))}/{int(m.group(3))}/{m.group(1)}" if m else (str(v) if v else None)
+
+
+def status_payload(status, existing, finished_on=None):
+    today = pb_date()
+    started = existing and existing.get("started_reading_at")
+    finished = existing and existing.get("finished_reading_at")
+    was_finished = existing and existing.get("status") == "finished"
+    if not started or (status == "reading" and was_finished):
+        started = today
+    if status == "read" and finished_on:
+        finished = form_date(finished_on) or today       # Hardcover's own finish date
+    elif status == "read" or not finished:
+        finished = today
+    e = existing or {}
+    return {
+        "user_book": {"owned": bool(e.get("owned")), "muted": bool(e.get("muted"))},
+        "shelf_ids": [s.get("id", s.get("shelf_id")) if isinstance(s, dict) else s for s in e.get("shelves") or []],
+        "status": SYSTEM[status], "date": e.get("date_added") or today,
+        "started_reading_at": started or "", "finished_reading_at": finished or "",
+        "challenge_year": e.get("challenge_year"), "format": e.get("format") or "print",
+        "tracking_mode": e.get("tracking_mode") or "pages", "total_page_count": "",
+        "total_minutes": (e.get("total_minutes") or 0) if existing else None,
+    }
+
+
+class Pagebound(Provider):
+    key, label = "pagebound", "Pagebound"
+    HOME = "https://pagebound.co/"
+
+    # ---- auth (Firebase sign-in -> Pagebound token exchange)
+    def _store(self, **kw):
+        self.cfg.update(kw); self.config.save()
+
+    def _sign_in(self):
+        pw = self.cfg.get("password")
+        if not self.cfg.get("email") or not pw:
+            raise AuthError("Pagebound: email/password not set")
+        s = firebase.sign_in(SIGN_IN, FIREBASE_KEY, {"clientType": "CLIENT_TYPE_WEB", "email": self.cfg["email"],
+                                                    "password": pw, "returnSecureToken": True})
+        self._store(id_token=s["id_token"], refresh_token=s["refresh_token"],
+                    token_expires_at=time.time() + s["expires_in"])
+
+    def _refresh_firebase(self):
+        c = self.cfg
+        if c.get("refresh_token") and (s := firebase.refresh(FIREBASE_KEY, c["refresh_token"])):
+            return self._store(id_token=s["id_token"], refresh_token=s["refresh_token"],
+                               token_expires_at=time.time() + s["expires_in"])
+        if c.get("id_token") and c.get("token_expires_at", 0) > time.time() + 60:
+            return
+        self._sign_in()
+
+    def _exchange(self):
+        r = requests.post(API + "/api/v1/auth/firebase_auth", json={"id_token": self.cfg["id_token"]},
+                          headers={"Authorization": "Bearer null"}, timeout=90)     # Render cold starts are slow
+        d = r.json() if r.content else {}
+        if r.status_code != 200 or not d.get("token"):
+            raise ProviderError(f"Pagebound token exchange failed (HTTP {r.status_code})")
+        self._store(api_token=d["token"], user_id=(d.get("user") or {}).get("id") or self.cfg.get("user_id"))
+
+    def _ensure(self, force=False):
+        c = self.cfg
+        expiring = not c.get("id_token") or c.get("token_expires_at", 0) <= time.time() + 60
+        if force or expiring:
+            self._refresh_firebase()
+        if force or expiring or not c.get("api_token"):
+            self._exchange()
+
+    def _req(self, path, method="GET", body=None, _retry=True):
+        self._ensure()
+        r = requests.request(method, API + path, json=body, timeout=45, headers={
+            "Authorization": "Bearer " + self.cfg["api_token"], "Accept": "application/json, text/plain, */*",
+            "User-Agent": UA})
+        if r.status_code in (401, 403):
+            if _retry:
+                self._ensure(force=True)
+                return self._req(path, method, body, False)
+            raise AuthError("Pagebound rejected the login")
+        try:
+            data = r.json() if r.content else None
+        except ValueError:
+            data = None
+        return r.status_code, data
+
+    def check_auth(self):
+        self._ensure(force=True)
+        return "Pagebound login OK"
+
+    # ---- search (Typesense: title/author only, no ISBN lookup - same as the plugin)
+    def search(self, query):
+        if not query.strip():
+            return []
+        r = requests.get(TYPESENSE_URL + "/collections/books/documents/search", timeout=30,
+                         headers={"X-TYPESENSE-API-KEY": TYPESENSE_KEY, "Accept": "application/json"},
+                         params={"q": query, "query_by": "title,author_name", "limit": 6, "num_typos": 2,
+                                 "split_join_tokens": "always", "typo_tokens_threshold": 6})
+        if r.status_code != 200:
+            raise ProviderError(f"Pagebound search failed (HTTP {r.status_code})")
+        out = []
+        for h in r.json().get("hits", []):
+            d = h.get("document") or {}
+            if d.get("id") and d.get("uuid"):
+                pc = d.get("page_count")
+                out.append({"id": f"{d['id']}:{d['uuid']}", "title": d.get("title") or "Untitled",
+                            "authors": [d.get("author_name") or d.get("author") or "Unknown Author"],
+                            "pages": int(pc) if pc else None,
+                            "cover": clean_cover(d.get("image_url") or d.get("image_url_medium") or d.get("image_url_small"))})
+        return out
+
+    def parse_ref(self, text):
+        t = (text or "").strip()
+        return t if re.fullmatch(r"\d+:[0-9a-fA-F-]{8,}", t) else None      # "<id>:<uuid>", as shown in the picker
+
+    @staticmethod
+    def _split(rid):
+        bid, _, uuid = rid.partition(":")
+        return bid, uuid
+
+    def _user_book(self, rid):
+        bid, uuid = self._split(rid)
+        code, d = self._req(f"/api/v1/books/{uuid}")
+        if code != 200 or not d or not d.get("book"):
+            raise ProviderError(f"Pagebound: book lookup failed (HTTP {code})")
+        b = d["book"]; ub = b.get("user_book")
+        page_count = b.get("page_count")
+        if not ub:
+            return None, page_count
+        cur = ub.get("current_reading_instance") if (ub.get("current_reading_instance") or {}).get("current") is not False else None
+        cur = cur if cur and cur.get("id") else next((r for r in ub.get("reading_instances") or [] if r.get("current") and r.get("id")), None)
+        return {
+            "id": ub.get("uuid") or str(ub.get("id")), "user_book_id": ub.get("id"), "status": ub.get("status"),
+            "progress": ub.get("progress") or 0, "current_page": ub.get("current_page"),
+            "total_page_count": ub.get("total_page_count") or (cur or {}).get("total_page_count") or page_count,
+            "owned": ub.get("owned"), "muted": ub.get("muted"), "date_added": ub.get("date_added"),
+            "started_reading_at": form_date((cur or {}).get("started_reading_at_date") or (cur or {}).get("started_reading_at") or ub.get("started_reading_at")),
+            "finished_reading_at": form_date((cur or {}).get("finished_reading_at_date") or (cur or {}).get("finished_reading_at") or ub.get("finished_reading_at")),
+            "challenge_year": (cur or {}).get("challenge_year") or ub.get("challenge_year"),
+            "format": (cur or {}).get("format") or ub.get("format"),
+            "tracking_mode": (cur or {}).get("tracking_mode") or ub.get("tracking_mode"),
+            "total_minutes": ub.get("total_minutes"), "shelves": ub.get("shelves") or [], "reading": cur,
+        }, page_count
+
+    def normalize_rating(self, rating):
+        return int(float(rating) * 2) / 2
+
+    def read_state(self, remote_id):
+        existing, _ = self._user_book(remote_id)
+        state = {"status": STATUS_BY.get((existing or {}).get("status")), "rating": None, "finished_dates": set(), "known": set()}
+        fin = (existing or {}).get("finished_reading_at")
+        m = re.match(r"^(\d{1,2})/(\d{1,2})/(\d{4})$", str(fin or ""))
+        if m:
+            state["finished_dates"].add(f"{int(m.group(3)):04d}-{int(m.group(1)):02d}-{int(m.group(2)):02d}")
+        if state["status"] == "read":
+            state["known"].add("finished_on")
+        return state
+
+    def set_status(self, remote_id, status, book):
+        bid, _ = self._split(remote_id)
+        existing, _ = self._user_book(remote_id)
+        if existing:
+            code, _d = self._req(f"/api/v1/user_books/{existing['id']}", "PUT",
+                                 status_payload(status, existing, book.finished_on))
+        else:
+            p = status_payload(status, None, book.finished_on)
+            p["user_book"]["book_id"] = int(bid)
+            p["user_book"]["status"] = p.pop("status")
+            code, _d = self._req("/api/v1/user_books", "POST", p)
+        if not (code and 200 <= code < 300):
+            raise ProviderError(f"Pagebound status update -> HTTP {code}")
+
+    def set_progress(self, remote_id, book, by_pages, remote_pages):
+        existing, page_count = self._user_book(remote_id)
+        if not existing or not (existing.get("reading") or {}).get("id"):
+            self.set_status(remote_id, "reading", book)
+            existing, page_count = self._user_book(remote_id)
+        cur = (existing or {}).get("reading")
+        if not cur:
+            raise ProviderError("Pagebound: no active reading session")
+        total = existing.get("total_page_count") or page_count or remote_pages or book.total_pages
+        total = int(total) if total and int(total) > 0 else None
+        mapped = mapped_page(book, total)
+        pages_mode = bool(by_pages and mapped is not None)
+        req_pct = book.percent if book.percent is not None else int(existing.get("progress") or 0)
+        req_pct = int(max(0, min(100, req_pct)) + 0.5)
+        page = mapped if pages_mode else (int(req_pct / 100 * total + 0.5) if total else existing.get("current_page"))
+        if page is not None:
+            page = max(0, int(float(page) + 0.5))
+            if total:
+                page = min(total, page)
+        pct = int(page * 100 / total) if (page is not None and total) else (
+            int(max(0, min(100, existing.get("progress") or 0))) if pages_mode else req_pct)
+        payload = {
+            "reading_update": {"user_book_id": int(cur.get("user_book_id") or existing["user_book_id"]),
+                               "date": pb_date(), "reading_instance_id": cur["id"], "total_progress": pct,
+                               "total_pages_read": str(page) if page is not None else None},
+            "user_book": {"current_page": str(page) if page is not None else None,
+                          "total_page_count": total if total else ("" if pages_mode else None),
+                          "current_minute": None, "total_minutes": None},
+            "no_broadcast": False, "progress_method": "pages" if pages_mode else "percent"}
+        code, _d = self._req("/api/v1/reading_updates", "POST", payload)
+        if code not in (200, 201):
+            raise ProviderError(f"Pagebound progress -> HTTP {code}")
+
+    def set_rating(self, remote_id, rating, book):
+        bid, _ = self._split(remote_id)
+        existing, _pc = self._user_book(remote_id)
+        if not existing:
+            raise ProviderError("Pagebound: no reading-list entry for this book yet")
+        n = None      # Pagebound takes half stars (floor), like the plugin
+        code, _d = self._req("/api/v1/reviews", "POST", {"review": {
+            "overall_rating": int(float(rating) * 2) / 2, "quality_rating": n, "entertainment_rating": n, "plot_rating": n,
+            "audiobook_rating": n, "character_rating": n, "is_spoiler": False, "review": "", "emojis": [],
+            "book_id": int(bid), "user_book_id": int(existing["user_book_id"]), "is_dnf": False}})
+        if not (code and 200 <= code < 300):
+            raise ProviderError(f"Pagebound rating -> HTTP {code}")

@@ -1,0 +1,66 @@
+name: heliograph       # fixed project name, so the volume is always heliograph_heliograph-data whatever the folder is called
+
+services:
+  heliograph:
+    build: .
+    container_name: heliograph
+    restart: unless-stopped
+    volumes:
+      # Named volume (lives inside WSL2's ext4). Avoid bind-mounting a Windows path like C:\... :
+      # SQLite locking and file permissions are unreliable on it.
+      - heliograph-data:/data
+      - ./icons:/data/icons
+    ports:
+      # Web UI at http://localhost:8080 - this PC only.
+      # Port 8080 already in use? Set HELIOGRAPH_PORT in a .env file next to this one (e.g. HELIOGRAPH_PORT=8090);
+      # see README > "Changing the web UI port". The container side (:8080) stays the same.
+      # Remove "127.0.0.1:" to expose it on your network, and then set HELIOGRAPH__web__password below.
+      - "127.0.0.1:${HELIOGRAPH_PORT:-8080}:8080"
+    # Lets the container reach services published on the host, e.g. the Goodreads cookie refresher
+    # (Docker Desktop provides this name already; the extra_hosts line makes the same file work on Linux).
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    logging:
+      driver: json-file
+      options: { max-size: "5m", max-file: "3" }
+    # --- Protecting secrets (optional but recommended; see README > Protecting secrets) ---
+    # Create secrets/heliograph.key FIRST, then uncomment this block and the top-level secrets: block below.
+    # secrets:
+    #   - heliograph_key              # mounts the encryption key at /run/secrets/heliograph_key (found automatically)
+    environment:
+      TZ: Etc/UTC                 # your time zone, e.g. America/New_York or Europe/London
+      # Any setting can be given as HELIOGRAPH__<section>__<key>. These win over config.json and are never written back.
+      # Values can be plain, or encrypted tokens from `python -m heliograph --encrypt` ("enc:v1:...") once a key is set up.
+      # You can also leave all of these out and fill everything in from the web UI's Settings page.
+      # HELIOGRAPH__hardcover__token: ""
+      # HELIOGRAPH__goodreads__enabled: "true"
+      # The refresher is a separate compose project that publishes REFRESHER_PORT (default 5080) on the host.
+      # HELIOGRAPH__goodreads__cookie_refresh_url: "http://host.docker.internal:5080"
+      # HELIOGRAPH__goodreads__cookie_refresh_token: ""          # = REFRESHER_AUTH_TOKEN in the refresher's .env, if set
+      # HELIOGRAPH__storygraph__enabled: "true"
+      # HELIOGRAPH__storygraph__session_cookie: ""
+      # HELIOGRAPH__storygraph__remember_user_token: ""
+      # HELIOGRAPH__fable__enabled: "true"
+      # HELIOGRAPH__fable__email: ""
+      # HELIOGRAPH__fable__password: ""
+      # HELIOGRAPH__pagebound__enabled: "true"
+      # HELIOGRAPH__pagebound__email: ""
+      # HELIOGRAPH__pagebound__password: ""
+      # LibraryThing (status + rating only; no progress): username/password, or paste the three session cookies
+      # HELIOGRAPH__librarything__enabled: "true"
+      # HELIOGRAPH__librarything__username: ""
+      # HELIOGRAPH__librarything__password: ""
+      # HELIOGRAPH__librarything__read_collection_id: "0"       # 0 = "Your library"; 5 = "Read but unowned"
+      # HELIOGRAPH__web__password: "<paste output of: docker compose run --rm heliograph python -m heliograph --hash-password>"
+      #                                                      # optional Basic-auth password for the web UI (any username)
+      # HELIOGRAPH__web__enabled: "true"
+      # HELIOGRAPH__common__poll_interval_minutes: "5"
+      # HELIOGRAPH__common__initial_sync: "baseline"            # or import_all
+
+# secrets:
+#   heliograph_key:
+#     file: ./secrets/heliograph.key   # keep this file OUT of the data volume and out of version control
+#   # one file per secret also works: HELIOGRAPH__fable__password_FILE: /run/secrets/fable_password
+
+volumes:
+  heliograph-data:

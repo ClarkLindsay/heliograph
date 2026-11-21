@@ -1,0 +1,23 @@
+# --- Personal / secret files: never commit ---
+.env
+docker-compose.override.yml
+secrets/
+*.key
+config.json
+state.db
+*.log
+imports/
+
+# Icons: only the placeholder is tracked. Service logos are other companies' trademarks;
+# drop your own copies in here locally (see README > Icons).
+icons/*
+!icons/.gitkeep
+
+# Python / build leftovers
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.zip
+HANDOFF.md
+.vscode/
