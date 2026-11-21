@@ -227,7 +227,8 @@ All of these can be entered on the web UI's **Settings** page. The matching envi
 | **Pagebound** | Account email and password. [`HELIOGRAPH__pagebound__email`, `HELIOGRAPH__pagebound__password`] |
 | **LibraryThing** | Username and password, **or** paste the session cookies `cookie_userid`, `cookie_usernum` and `cookie_userchecksum`. [`HELIOGRAPH__librarything__username`, `…__password`, `…__session_cookie`] |
 
-Each service also needs `enabled` turned on (a checkbox in Settings, or `HELIOGRAPH__<service>__enabled: "true"`).
+Every service starts **off**. Nothing is sent anywhere until you turn a service on (a checkbox in Settings, or
+`HELIOGRAPH__<service>__enabled: "true"`).
 
 ## Web UI
 
@@ -416,8 +417,7 @@ its container.
 
 ## LibraryThing
 
-LibraryThing is off by default. It has no reading status or progress: a "status" is which collection a copy is in,
-plus its reading dates.
+LibraryThing has no reading status or progress: a "status" is which collection a copy is in, plus its reading dates.
 
 | Hardcover | LibraryThing |
 |---|---|
