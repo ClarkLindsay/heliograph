@@ -289,6 +289,37 @@ def find_server_action_id(source, name):
         frm = at + len(label)
 
 
+SUMMON = re.compile(r"reviewEditor\.summon\(this,\s*\d+,\s*'(started_at|read_at)',\s*\{value:\s*(?:\"([^\"]*)\"|\{\s*\})\s*,"
+                    r"\s*reading_session_id:\s*\"([^\"]+)\"")
+
+
+def parse_read_list(html):
+    """Rows of a 'My Books' table page: each book with its ISBNs and every reading session's start and finish
+    (YYYY-MM-DD; Goodreads can also hold just a month or a year)."""
+    out = []
+    for tr in BeautifulSoup(html, "html.parser").select("tr.bookalike.review"):
+        a = tr.select_one("td.field.title a[href*='/book/show/']")
+        m = re.search(r"/book/show/(\d+)", a.get("href") or "") if a else None
+        if not m:
+            continue
+        isbns = []
+        for f in ("isbn13", "isbn"):
+            td = tr.select_one(f"td.field.{f} .value")
+            v = re.sub(r"[^0-9Xx]", "", td.get_text() if td else "").upper()
+            if len(v) in (10, 13):
+                isbns.append(v)
+        sessions = {}
+        for el in tr.select("td.field.date_started a[onclick], td.field.date_read a[onclick]"):
+            mm = SUMMON.search(el.get("onclick") or "")
+            if mm:
+                sessions.setdefault(mm.group(3), {"started": None, "finished": None})[
+                    "started" if mm.group(1) == "started_at" else "finished"] = mm.group(2) or None
+        out.append({"id": m.group(1), "title": " ".join((a.get("title") or a.get_text(" ", strip=True)).split()),
+                    "authors": [" ".join(x.get_text(" ", strip=True).split()) for x in tr.select("td.field.author a")][:1],
+                    "isbns": isbns, "reads": list(sessions.values())})
+    return out
+
+
 def date_parts(v):
     if not isinstance(v, dict):
         return None
@@ -518,6 +549,25 @@ class Goodreads(Provider):
         r = self._req("GET", BASE + "/review/list")               # redirects to /review/list/<your user id>
         m = re.search(r"/review/list/(\d+)", getattr(r, "final_url", "") or "")
         return f"{BASE}/user/show/{m.group(1)}" if m else None
+
+    def reading_dates(self, progress=None):
+        """Every book on your Goodreads shelves with its reading sessions, from the 'My Books' table, 100 a page."""
+        m = re.search(r"/user/show/(\d+)", self.profile_url() or "")
+        if not m:
+            raise ProviderError("Couldn't find your Goodreads user id: check the Goodreads login in Settings")
+        out = []
+        for page in range(1, 201):
+            r = self._req("GET", f"{BASE}/review/list/{m.group(1)}", params={
+                "shelf": "#ALL#", "per_page": "100", "view": "table", "sort": "date_added", "order": "a", "page": str(page)})
+            if r.status_code != 200:
+                raise ProviderError(f"Goodreads 'My Books' page {page} -> HTTP {r.status_code}")
+            rows = parse_read_list(r.text)
+            out += rows
+            if progress:
+                progress(len(out))
+            if len(rows) < 100:
+                break
+        return out
 
     def refresher_status(self):
         """One line about the cookie refresher (for the Test button), or None if none is set up."""

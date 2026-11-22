@@ -54,8 +54,8 @@ function mono(key){const b=BRAND[key]||['#666',(key||'?')[0].toUpperCase()];cons
 const safeUrl=u=>/^https?:\/\/\S+$/.test(u||'');
 function homeIcon(x,px){const i=icon(x.key,px||22);return safeUrl(x.home)?h('a',{href:x.home,target:'_blank',rel:'noopener noreferrer',title:'Open '+x.label},i):i}
 function icon(key,px){const i=h('img',{src:'/icons/'+key,width:px,height:px,alt:'',class:'ico'});let done=false;i.addEventListener('error',()=>{if(!done){done=true;i.setAttribute('src',mono(key))}});return i}
-function setTab(t){tab=t;tabToken++;clearTimeout(timer);timer=null;onClose=null;$('#nav').replaceChildren(...[['dash','Dashboard'],['books','Books'],['import','Import'],['settings','Settings'],['account',me.admin?'Users':'Account']].map(([k,l])=>h('button',{class:tab===k?'on':'',onclick:()=>setTab(k)},l)));
- ({dash:dash,books:books,import:importTab,settings:settings,account:account})[t]()}
+function setTab(t){tab=t;tabToken++;clearTimeout(timer);timer=null;onClose=null;$('#nav').replaceChildren(...[['dash','Dashboard'],['books','Books'],['import','Import'],['hardcover','Hardcover'],['settings','Settings'],['account',me.admin?'Users':'Account']].map(([k,l])=>h('button',{class:tab===k?'on':'',onclick:()=>setTab(k)},l)));
+ ({dash:dash,books:books,import:importTab,hardcover:hardcoverTab,settings:settings,account:account})[t]()}
 
 /* Account: your password; the admin also manages users and invite codes. */
 function account(){const m=$('#main'),tok=tabToken;
@@ -129,6 +129,62 @@ function dash(){const m=$('#main'),tok=tabToken;let ui=null;fill(m,h('p',{class:
  dash.refresh=refresh;
  loop(async()=>{try{return await refresh()}catch(e){if(!ui)fill(m,h('div',{class:'msg bad'},e.message));else note(ui.res,e.message,'bad');return 8000}},tok)}
 
+/* Hardcover: data corrections. The only place Heliograph writes to Hardcover, and only when you press Apply. */
+function hardcoverTab(){const m=$('#main'),tok=tabToken,u={};
+  u.hcOut=h('div');u.hcList=h('div');
+  const hcRow=b=>{const res=h('div',{class:'small'});
+    const opt=c=>h('option',{value:c.id,selected:c.id===b.suggested},[c.format,c.edition_format,c.pages?c.pages+' p':'',c.users?c.users+' readers':'',c.isbn?'ISBN '+c.isbn:'',c.title].filter(Boolean).join(' · '));
+    const sel=b.candidates.length?h('select',{style:'max-width:100%'},...b.candidates.map(opt)):null;
+    const go=h('button',{class:'btn small pri',onclick:async()=>{
+      if(!confirm(`Change “${b.title}” in your Hardcover library to the selected edition? (Its ${b.current.language} edition is replaced; your status, rating and dates stay.)`))return;
+      go.disabled=true;try{await api('/api/hardcover/cleanup',{id:b.id,edition_id:+sel.value});sel.disabled=true;go.remove();note(res,'✓ Changed in Hardcover','ok')}catch(e){go.disabled=false;note(res,e.message,'bad')}}},'Apply');
+    return h('div',{class:'cand'},h('div',{class:'grow'},h('b',{},b.title),
+      h('div',{class:'small mut'},`Now: ${b.current.language} · ${[b.current.format,b.current.edition_format].filter(Boolean).join(' · ')} · “${b.current.title||''}”`),
+      sel||h('div',{class:'small'},`No ${u.hcLang} edition of this book on Hardcover: change it there by hand.`),res),sel?go:null)};
+  u.hcFind=h('button',{class:'btn',onclick:async()=>{u.hcFind.disabled=true;note(u.hcOut,'Looking through your Hardcover library…');
+    try{const r=await api('/api/hardcover/cleanup');u.hcLang=r.language;fill(u.hcOut,null);
+      fill(u.hcList,r.books.length?h('div',{},h('p',{class:'small mut'},`${r.books.length} book(s) with a non-${r.language} edition. The suggested ${r.language} edition (same format, most used) is pre-selected.`),r.books.map(hcRow)):h('div',{class:'msg ok'},`Every book in your Hardcover library uses a ${r.language} edition (or doesn’t say).`))}
+    catch(e){note(u.hcOut,e.message,'bad')}finally{u.hcFind.disabled=false}}},'Find non-English editions');
+  const OPS={start:'Start date',dates:'Change dates',add:'Add a read'};
+  const d={msg:h('div',{class:'small'}),list:h('div'),out:h('div'),sel:new Set(),seen:0,picked:0,sig:'',items:[]};
+  const fmt=x=>x||'—',isDone=i=>/^✓/.test(i.result||'');
+  const what=i=>i.op==='add'?`started ${fmt(i.started)}, finished ${fmt(i.finished)}`:
+    i.op==='start'?`${fmt(i.was[0])} → ${i.started}`+(i.finished?` (finished ${i.finished})`:' (still reading)'):
+    `${fmt(i.was[0])} – ${fmt(i.was[1])} → ${fmt(i.started)} – ${fmt(i.finished)}`;
+  d.scan=h('button',{class:'btn',onclick:async()=>{try{await api('/api/hardcover/dates/scan',{});setTimeout(()=>tok===tabToken&&poll(),300)}catch(e){note(d.out,e.message,'bad')}}},'Scan Goodreads');
+  d.apply=h('button',{class:'btn pri',style:'display:none',onclick:async()=>{
+    const keys=d.items.filter(i=>d.sel.has(i.key)&&!isDone(i)).map(i=>i.key);
+    if(!confirm(`Write ${keys.length} date change(s) to your Hardcover library?`))return;
+    try{await api('/api/hardcover/dates/apply',{keys});setTimeout(()=>tok===tabToken&&poll(),300)}catch(e){note(d.out,e.message,'bad')}}},'Apply');
+  const pick=f=>{d.sel.clear();d.items.forEach(i=>{if(!isDone(i)&&f(i))d.sel.add(i.key)});d.sig='';render()};
+  const link=(t,f)=>h('a',{href:'#',onclick:e=>{e.preventDefault();pick(f)}},t);
+  d.bulk=h('span',{class:'small',style:'display:none'},'Select ',link('all',()=>true),' · ',link('suggested',i=>i.pick),' · ',link('none',()=>false));
+  function render(){const items=d.items,sg=sigOf([items.map(i=>[i.key,i.result]),[...d.sel],d.running]);
+    const n=items.filter(i=>d.sel.has(i.key)&&!isDone(i)).length,show=items.length&&!d.running;
+    d.apply.style.display=show?'':'none';d.apply.disabled=!n;setText(d.apply,`Apply ${n} change(s)`);
+    d.bulk.style.display=show?'':'none';
+    if(sg===d.sig)return;d.sig=sg;
+    const books=[];items.forEach(i=>{const last=books[books.length-1];if(last&&last.id===i.id)last.items.push(i);else books.push({id:i.id,title:i.title,authors:i.authors,url:i.gr_url,items:[i]})});
+    fill(d.list,books.length?h('div',{style:'margin-top:8px'},books.map(b=>h('div',{class:'cand',style:'display:block'},
+      h('div',{},h('b',{},b.title),h('span',{class:'small mut'},' · '+b.authors+' · '),h('a',{class:'small',href:b.url,target:'_blank',rel:'noopener noreferrer'},'Goodreads')),
+      b.items.map(i=>{const done=isDone(i);const cb=h('input',{type:'checkbox',checked:d.sel.has(i.key)&&!done,disabled:done||d.running,
+          onchange:e=>{e.target.checked?d.sel.add(i.key):d.sel.delete(i.key);d.sig='';render()}});
+        return h('label',{class:'row small',style:'margin:3px 0 0 4px'},cb,h('span',{class:'grow'},h('b',{},OPS[i.op]+': '),what(i),h('span',{class:'mut'},' · '+i.why)),
+          i.result?h('span',{style:`color:var(--${done?'ok':'bad'})`},i.result):null)})))):null)}
+  async function poll(){const j=await api('/api/hardcover/dates');if(tok!==tabToken)return 8000;
+    if(j.started&&j.started!==d.seen){d.seen=j.started;d.sel.clear();d.picked=0}
+    if(j.phase==='scan'&&!j.running&&j.started&&d.picked!==j.started){d.picked=j.started;(j.items||[]).forEach(i=>{if(i.pick)d.sel.add(i.key)})}
+    d.items=j.items||[];d.running=!!j.running;d.scan.disabled=d.running;
+    setText(d.msg,j.started?(j.message||'')+(j.running&&j.phase==='apply'?` · ${j.done}/${j.total}`:'')+(!j.running&&j.partial?` · ${j.partial} Goodreads date(s) with only a month or year were left out`:''):'');
+    render();return j.running?1500:8000}
+  fill(m,h('div',{class:'card'},h('h3',{},'Reading dates from Goodreads'),
+    h('p',{class:'small mut'},'If you came to Hardcover with a Goodreads import, your start dates may be missing. This reads every book on your Goodreads shelves (one page per 100 books) and compares each reading session with the reads Hardcover has. Books are matched by ISBN, then title and author. Suggested changes (a missing start date, or a read for a book Hardcover has none of) are pre-selected. Changes that replace a date Hardcover already has are listed but not selected. Nothing is written until you press Apply.'),
+    h('div',{class:'row'},h('span',{class:'grow'},d.msg),d.bulk,d.scan,d.apply),d.out,d.list),
+   h('div',{class:'card',style:'margin-top:12px'},h('h3',{},'Hardcover editions'),
+    h('p',{class:'small mut'},'Finds books in your Hardcover library whose edition isn’t in your Preferred edition language (Settings), and lets you switch each to an edition in that language. Your status, rating and dates stay; reading sessions on the old edition move with it.'),
+    h('div',{class:'row'},h('span',{class:'grow'}),u.hcFind),u.hcOut,u.hcList));
+  loop(async()=>{try{return await poll()}catch(e){note(d.out,e.message,'bad');return 8000}},tok)}
+
 function importTab(){const m=$('#main'),tok=tabToken;let ui=null;fill(m,h('p',{class:'mut'},'Loading…'));
  const LBL={reading:'Reading',read:'Read',want:'Want to read',paused:'Paused',dnf:'Did not finish'};
  function build(s){
@@ -146,20 +202,6 @@ function importTab(){const m=$('#main'),tok=tabToken;let ui=null;fill(m,h('p',{c
   u.edMsg=h('div',{class:'small'});u.edList=h('div');u.edOut=h('div');
   const edGo=fix=>async()=>{if(fix&&!confirm('This relinks the books listed below. On StoryGraph your entry (status, dates, rating) is moved to the right edition; elsewhere the current status is sent to the new edition. Continue?'))return;
     try{await api('/api/editions',{fix});setTimeout(()=>tok===tabToken&&u.refresh(),300)}catch(e){note(u.edOut,e.message,'bad')}};
-  u.hcOut=h('div');u.hcList=h('div');
-  const hcRow=b=>{const res=h('div',{class:'small'});
-    const opt=c=>h('option',{value:c.id,selected:c.id===b.suggested},[c.format,c.edition_format,c.pages?c.pages+' p':'',c.users?c.users+' readers':'',c.isbn?'ISBN '+c.isbn:'',c.title].filter(Boolean).join(' · '));
-    const sel=b.candidates.length?h('select',{style:'max-width:100%'},...b.candidates.map(opt)):null;
-    const go=h('button',{class:'btn small pri',onclick:async()=>{
-      if(!confirm(`Change “${b.title}” in your Hardcover library to the selected edition? (Its ${b.current.language} edition is replaced; your status, rating and dates stay.)`))return;
-      go.disabled=true;try{await api('/api/hardcover/cleanup',{id:b.id,edition_id:+sel.value});sel.disabled=true;go.remove();note(res,'✓ Changed in Hardcover','ok')}catch(e){go.disabled=false;note(res,e.message,'bad')}}},'Apply');
-    return h('div',{class:'cand'},h('div',{class:'grow'},h('b',{},b.title),
-      h('div',{class:'small mut'},`Now: ${b.current.language} · ${[b.current.format,b.current.edition_format].filter(Boolean).join(' · ')} · “${b.current.title||''}”`),
-      sel||h('div',{class:'small'},`No ${u.hcLang} edition of this book on Hardcover: change it there by hand.`),res),sel?go:null)};
-  u.hcFind=h('button',{class:'btn',onclick:async()=>{u.hcFind.disabled=true;note(u.hcOut,'Looking through your Hardcover library…');
-    try{const r=await api('/api/hardcover/cleanup');u.hcLang=r.language;fill(u.hcOut,null);
-      fill(u.hcList,r.books.length?h('div',{},h('p',{class:'small mut'},`${r.books.length} book(s) with a non-${r.language} edition. The suggested ${r.language} edition (same format, most used) is pre-selected.`),r.books.map(hcRow)):h('div',{class:'msg ok'},`Every book in your Hardcover library uses a ${r.language} edition (or doesn’t say).`))}
-    catch(e){note(u.hcOut,e.message,'bad')}finally{u.hcFind.disabled=false}}},'Find non-English editions');
   u.rm=h('div');
   const rmGo=remove=>async()=>{if(remove&&!confirm('Remove these books from your services (per Settings → When you remove a book from Hardcover)?'))return;
     try{const r=await api('/api/removals',{remove});note(u.rm,remove?`Done: ${r.removed} removed from services, ${r.kept} left in place, ${r.failed} failed (retried later).`:`Forgot ${r.forgotten} book(s); nothing was removed from your services.`,'ok')}catch(e){note(u.rm,e.message,'bad')}};
@@ -180,10 +222,7 @@ function importTab(){const m=$('#main'),tok=tabToken;let ui=null;fill(m,h('p',{c
    h('div',{class:'prog'},h('div',{class:'bar'},u.bar),u.msg,u.stats,u.recent,u.dl),u.unm,u.fail,
    h('div',{class:'card',style:'margin-top:12px'},h('h3',{},'Linked editions'),
     h('p',{class:'small mut'},'Finds books linked to an audiobook or another-language edition (see Settings → Preferred edition language) and moves them to the right one. “Check editions” only looks. “Fix them” relinks; on StoryGraph it moves your entry with its dates and rating, elsewhere it sends the current status to the new edition. Works for StoryGraph, Goodreads and Fable: Pagebound and LibraryThing don’t say which edition is which.'),
-    h('div',{class:'row'},h('span',{class:'grow'},u.edMsg),u.edCheck,u.edFix),u.edOut,u.edList),
-   h('div',{class:'card',style:'margin-top:12px'},h('h3',{},'Hardcover editions'),
-    h('p',{class:'small mut'},'Finds books in your Hardcover library whose edition isn’t in your Preferred edition language (Settings), and lets you switch each to an edition in that language. This is the only part of Heliograph that changes Hardcover, and only when you press Apply. Your status, rating and dates stay; reading sessions on the old edition move with it.'),
-    h('div',{class:'row'},h('span',{class:'grow'}),u.hcFind),u.hcOut,u.hcList));
+    h('div',{class:'row'},h('span',{class:'grow'},u.edMsg),u.edCheck,u.edFix),u.edOut,u.edList));
   setText(u.start,imp.dry?'Start preview':'Start import');return u}
  function list(el,key,items,title,hint,row){const sg=sigOf(items);if(ui.sigs[key]===sg)return;ui.sigs[key]=sg;
   fill(el,items.length?h('div',{class:'card',style:'margin-top:12px'},h('h3',{},`${title} (${items.length})`),h('p',{class:'small mut'},hint),items.map(row)):null)}

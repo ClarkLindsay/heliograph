@@ -591,6 +591,7 @@ def make_handler(hub, cfg, server_log):
                 if path == "/api/editions": return dict(api.e.ed_job)
                 if path == "/api/hardcover/cleanup": return api._guard(api.e.hardcover_cleanup)
                 if path == "/api/removals": return api.e.pending_removals()
+                if path == "/api/hardcover/dates": return dict(api.e.dates_job)
                 m = re.fullmatch(r"/api/book/(\d+)", path)
                 if m: return api.book(int(m.group(1)))
                 m = re.fullmatch(r"/api/book/(\d+)/cover", path)
@@ -604,6 +605,12 @@ def make_handler(hub, cfg, server_log):
                 if path == "/api/import/retry-failed": return api.import_retry()
                 if path == "/api/editions": return dict(api._guard(api.e.start_edition_check, bool(body.get("fix"))))
                 if path == "/api/removals": return api._guard(api.e.resolve_removals, bool(body.get("remove")))
+                if path == "/api/hardcover/dates/scan": return dict(api._guard(api.e.start_dates_scan))
+                if path == "/api/hardcover/dates/apply":
+                    keys = body.get("keys")
+                    if not isinstance(keys, list) or not all(isinstance(k, str) for k in keys):
+                        raise ApiError(400, "Send keys: a list of change keys")
+                    return dict(api._guard(api.e.apply_dates, keys))
                 if path == "/api/hardcover/cleanup":
                     try:
                         ub, ed = int(body["id"]), int(body["edition_id"])

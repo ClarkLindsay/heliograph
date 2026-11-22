@@ -1,5 +1,5 @@
-"""Hardcover GraphQL client (official API). Hardcover is the source of truth: syncing only reads it. The one write is
-set_edition(), used by the web UI's edition cleanup when you press Apply.
+"""Hardcover GraphQL client (official API). Hardcover is the source of truth: syncing only reads it. The only writes
+are set_edition() and set_read_dates(), used by the web UI's Hardcover tab when you press Apply.
 Field names follow the ones ShelfSync's own Hardcover provider queries."""
 import time
 from dataclasses import dataclass, field
@@ -242,6 +242,53 @@ class HardcoverClient:
             self._ed_cache.pop(key, None)
             self._ed_cache.get("covers", {}).pop(key, None)
         return {"old": old, "new": int(edition_id), "reads_moved": moved}
+
+    # ---- reading dates (from Goodreads): read everything, write one read at a time when you press Apply
+    def reading_dates(self):
+        """Every book in your library with its edition ISBNs and all its reads (oldest first)."""
+        q = """query($u: Int!, $o: Int!) { user_books(where: {user_id: {_eq: $u}}, order_by: {id: asc}, limit: 100, offset: $o) {
+          id status_id book { title contributions { contribution author { name } } } edition { isbn_10 isbn_13 }
+          user_book_reads(order_by: {id: asc}) { id started_at finished_at } } }"""
+        out, offset = [], 0
+        while True:
+            page = self._q(q, {"u": self.user_id, "o": offset})["user_books"]
+            for ub in page:
+                b = book_from_ub(ub)
+                ed = ub.get("edition") or {}
+                out.append({"id": ub["id"], "title": b.title, "authors": b.authors, "status": b.status,
+                            "isbns": [i for i in (ed.get("isbn_13"), ed.get("isbn_10")) if i],
+                            "reads": [{"id": r["id"], "started": r.get("started_at"), "finished": r.get("finished_at")}
+                                      for r in ub.get("user_book_reads") or []]})
+            if len(page) < 100:
+                return out
+            offset += 100
+
+    def set_read_dates(self, ub_id, read_id, started, finished, was=None):
+        """Set one read's start and finish dates (read_id None: add a read). `was` = the (started, finished) you
+        were shown; if Hardcover has something else now, nothing is written."""
+        q = """query($id: Int!) { user_books(where: {id: {_eq: $id}}) { id user_id edition_id
+          user_book_reads { id edition_id started_at finished_at progress_pages progress_seconds } } }"""
+        ub = (self._q(q, {"id": int(ub_id)}).get("user_books") or [None])[0]
+        if not ub or ub.get("user_id") != self.user_id:
+            raise HardcoverError("That book isn't in your Hardcover library")
+        if read_id is None:
+            obj = {"started_at": started, "finished_at": finished, "edition_id": ub.get("edition_id")}
+            res = self._q("""mutation($id: Int!, $o: DatesReadInput!) { insert_user_book_read(user_book_id: $id, user_book_read: $o) { id error } }""",
+                          {"id": int(ub_id), "o": obj})["insert_user_book_read"]
+        else:
+            rd = next((r for r in ub.get("user_book_reads") or [] if r["id"] == int(read_id)), None)
+            if not rd:
+                raise HardcoverError("That read is no longer on the book in Hardcover")
+            if was is not None and (rd.get("started_at"), rd.get("finished_at")) != tuple(was):
+                raise HardcoverError("Hardcover's dates changed since the scan: scan again")
+            # the update takes the whole record: send the rest back unchanged
+            obj = {k: rd.get(k) for k in ("edition_id", "progress_pages", "progress_seconds")}
+            obj.update(started_at=started, finished_at=finished)
+            res = self._q("""mutation($id: Int!, $o: DatesReadInput!) { update_user_book_read(id: $id, object: $o) { id error } }""",
+                          {"id": int(read_id), "o": obj})["update_user_book_read"]
+        if not res or res.get("error"):
+            raise HardcoverError(f"Hardcover refused the change: {(res or {}).get('error') or 'no response'}")
+        return res.get("id")
 
     def hydrate(self, b: Book):
         """Fill ISBNs and the user's edition page count (one cached query), as the plugin's editions do."""

@@ -2,6 +2,7 @@ import csv, io, json, logging, threading, time
 from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
+from . import dates
 from .config import APP_DIR
 from .hardcover import HardcoverClient
 from .providers.base import AuthError, is_audio
@@ -38,6 +39,7 @@ class Engine:
                        "result": "not run yet", "next_run": 0}
         self.job = {"running": False}
         self.ed_job = {"running": False}
+        self.dates_job = {"running": False}
         self.job_entries, self.job_results = [], []
         self.import_dir = (Path(data_dir) if data_dir else APP_DIR) / "imports"      # each user's own import logs
         self._covers = {}
@@ -534,6 +536,81 @@ class Engine:
         return out
 
     # ---- Hardcover edition cleanup (the only writes to Hardcover; each one is a button press in the web UI)
+    # ---- reading dates: Goodreads -> Hardcover (scan, then you pick what to apply)
+    def start_dates_scan(self):
+        if self.dates_job.get("running"):
+            raise ValueError("A reading dates scan or update is already running")
+        gr = self.provider("goodreads")
+        if not gr:
+            raise ValueError("Goodreads isn't available")
+        self.dates_job = {"running": True, "phase": "scan", "items": [], "done": 0, "total": 0, "started": time.time(),
+                          "finished": 0, "message": "Reading your Goodreads shelves…"}
+        threading.Thread(target=self._dates_scan, args=(gr,), daemon=True, name="dates-scan").start()
+        return self.dates_job
+
+    def _dates_scan(self, gr):
+        job = self.dates_job
+        try:
+            with self.busy("goodreads", timeout=CYCLE_WAIT, why="reading your Goodreads dates"):
+                rows = gr.reading_dates(lambda n: job.update(message=f"Reading your Goodreads shelves… {n} books"))
+            job["message"] = "Reading your Hardcover library…"
+            hc_books = self.hc().reading_dates()
+            linked = {str(link["remote_id"]): ub for ub, link in self.state.links_for_service("goodreads") if link["remote_id"]}
+            pairs = dates.pair_books(rows, hc_books, linked)
+            items, partial = [], 0
+            for b, g in sorted(pairs, key=lambda t: t[0]["title"].lower()):
+                partial += sum(1 for r in g["reads"] for v in (r["started"], r["finished"]) if v and not dates.full(v))
+                for n, ch in enumerate(dates.plan(b["reads"], g["reads"])):
+                    items.append(dict(ch, key=f"{b['id']}:{n}", id=b["id"], title=b["title"], authors=", ".join(b["authors"]),
+                                      gr_url=gr.book_url(g["id"]), result=""))
+            job.update(items=items, gr_books=len(rows), hc_books=len(hc_books), matched=len(pairs), partial=partial,
+                       message=f"{len(rows)} Goodreads books, {len(pairs)} matched in Hardcover: "
+                               + (f"{len(items)} date change(s) to review" if items else "the dates already agree"))
+            self.log.info("Reading dates: %s", job["message"])
+        except Exception as e:
+            self.log.error("Reading dates scan failed: %s", e)
+            job["message"] = f"Failed: {e}"
+        finally:
+            job.update(running=False, finished=time.time())
+
+    def apply_dates(self, keys):
+        job = self.dates_job
+        if job.get("running"):
+            raise ValueError("A reading dates scan or update is already running")
+        keys = set(keys or ())
+        todo = [i for i in job.get("items") or [] if i["key"] in keys and not i["result"].startswith("✓")]
+        if not todo:
+            raise ValueError("Select at least one change")
+        job.update(running=True, phase="apply", done=0, total=len(todo), message="Updating Hardcover…")
+        threading.Thread(target=self._dates_apply, args=(todo,), daemon=True, name="dates-apply").start()
+        return job
+
+    def _dates_apply(self, todo):
+        job, ok = self.dates_job, 0
+        try:
+            hc = self.hc()
+            for it in todo:
+                job["message"] = f"Updating '{it['title']}'…"
+                try:
+                    hc.set_read_dates(it["id"], it["read_id"], it["started"], it["finished"], it["was"])
+                    it["result"] = "✓ updated in Hardcover"; ok += 1
+                    self.log.info("Hardcover: '%s' %s: started %s, finished %s (from Goodreads)", it["title"],
+                                  "read added" if it["op"] == "add" else "dates set", it["started"] or "-", it["finished"] or "-")
+                except Exception as e:
+                    it["result"] = f"error: {str(e)[:200]}"
+                job["done"] += 1
+            for ub in {it["id"] for it in todo if it["result"].startswith("✓")}:
+                b = hc.fetch_one(ub)                             # the local copy keeps the latest finish date
+                if b:
+                    self.state.upsert_book(b, time.time())
+            bad = len(todo) - ok
+            job["message"] = f"Done: {ok} change(s) made in Hardcover" + (f", {bad} failed" if bad else "")
+        except Exception as e:
+            self.log.error("Reading dates update failed: %s", e)
+            job["message"] = f"Failed: {e}"
+        finally:
+            job.update(running=False, finished=time.time())
+
     def hardcover_cleanup(self):
         lang = (self.common.get("preferred_language") or "").strip()
         if not lang:

@@ -54,9 +54,9 @@ Ratings: Goodreads quarter stars, StoryGraph quarter stars (review form, other r
 Pagebound and LibraryThing half stars (floored), the same as ShelfSync.
 
 Sync is **one way only**. Heliograph reads Hardcover through its official API and never writes to it while syncing.
-The one exception is the optional **Hardcover editions** cleanup on the Import tab. It changes a book's edition in
-your Hardcover library, for example from a translation you never read to the English edition, and only when you press
-**Apply** for that book.
+The exceptions are the optional data corrections on the **Hardcover** tab, which only write when you press **Apply**:
+**Reading dates from Goodreads** fills in start dates (and other date fixes you pick), and **Hardcover editions**
+changes a book's edition, for example from a translation you never read to the English edition.
 
 By default the first run is a **baseline**: it records your current library and pushes nothing, so only *later* changes
 are sent. That's the safe choice if you've already imported your history into each service. Use the **Import** tab
@@ -276,6 +276,21 @@ Open **http://localhost:8080** (or [your port](#changing-the-web-ui-port)).
   - **Unmatched books:** books with no confident match on a service (even in a preview) are listed here and flagged ⚑
     in the Books tab (filter: *Flagged: no match*). Click one, then **Find edition…** and **Use this**. It drops off
     the list once linked.
+- **Hardcover** tab (0.5.0+): corrections to your Hardcover data. These are the only things in Heliograph that write
+  to Hardcover, and only when you press **Apply**.
+  - **Reading dates from Goodreads:** for people who came to Hardcover with a Goodreads import, which brings finish
+    dates but no start dates. **Scan Goodreads** reads your Goodreads *My Books* list (one page per 100 books) and
+    your Hardcover reads, matches the books (the linked edition, then ISBN, then title and author) and pairs up each
+    reading session by its finish date. It then lists what differs:
+    - **Start date:** Goodreads has a start date that Hardcover is missing (pre-selected) or has differently (not
+      selected). Same-day start and finish dates are not selected either: they're often placeholders.
+    - **Change dates:** one read on each side with different finish dates (not selected).
+    - **Add a read:** a Goodreads read Hardcover doesn't have. Pre-selected only when Hardcover has no reads of the book.
+
+    Tick what you want and press **Apply**. Each read is checked again just before it's written, and skipped if
+    Hardcover's dates changed since the scan. Dates Goodreads only has as a month or year are left out.
+  - **Hardcover editions:** finds books whose Hardcover edition isn't in your preferred language and switches the ones
+    you pick (moved here from the Import tab).
 - **Settings:** everything from the config, including the poll interval. Secrets are never shown: leave a field blank
   to keep its value, and **Clear** removes it. Settings set through `HELIOGRAPH__...` environment variables are shown
   locked. Changes apply on the next cycle.

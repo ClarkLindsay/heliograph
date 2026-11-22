@@ -122,6 +122,9 @@ def test_pages_security_and_status():
             assert lst["books"][0]["services"]["goodreads"]["state"] == "recorded" and lst["books"][0]["percent"] == 13
             assert call(srv, "GET", "/api/books?q=austen")[1]["total"] == 1
             assert call(srv, "GET", "/api/books?status=read")[1]["books"][0]["title"] == "Emma"
+            assert call(srv, "GET", "/api/hardcover/dates")[1] == {"running": False}           # reading dates: nothing yet
+            assert call(srv, "POST", "/api/hardcover/dates/apply", {"keys": "x"})[0] == 400
+            assert call(srv, "POST", "/api/hardcover/dates/apply", {"keys": ["5:0"]})[0] == 400   # no scan to apply from
         finally:
             srv.stop()
 
