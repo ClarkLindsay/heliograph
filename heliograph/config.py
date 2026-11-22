@@ -36,6 +36,11 @@ DEFAULTS = {
         "read_collection_id": 0,              # 0 = "Your library"; set e.g. 5 for "Read but unowned"
         "user_agent": "", "home_url": "",
     },
+    "bookorbit": {
+        "url": "",                   # e.g. http://host.docker.internal:3000
+        "api_key": "",               # BookOrbit -> Settings -> API keys
+        "auto_ebook": True,          # adding an ebook to an audiobook switches its Hardcover edition to the ebook
+    },
     "web": {
         "enabled": True,
         "port": 8080,
@@ -69,6 +74,7 @@ SECRET_FIELDS = {
     ("fable", "password"), ("fable", "id_token"), ("fable", "refresh_token"),
     ("pagebound", "password"), ("pagebound", "id_token"), ("pagebound", "refresh_token"), ("pagebound", "api_token"),
     ("librarything", "password"), ("librarything", "session_cookie"), ("web", "password"),
+    ("bookorbit", "api_key"),
 }
 
 

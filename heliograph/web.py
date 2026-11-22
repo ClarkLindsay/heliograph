@@ -61,6 +61,10 @@ SPEC = {
         ("password", "Password", "secret"), ("session_cookie", "Session cookies (alternative)", "secret"),
         ("read_collection_id", "Read collection id (0 = Your library)", "int"), ("user_agent", "User-Agent override", "str"),
         ("home_url", "Dashboard icon link", "str")]),
+    "bookorbit": ("BookOrbit", [
+        ("url", "BookOrbit URL (from Docker: http://host.docker.internal:3000)", "str"),
+        ("api_key", "API key (BookOrbit → Settings → API keys)", "secret"),
+        ("auto_ebook", "When you add an ebook to an audiobook, switch its Hardcover edition to the ebook", "bool")]),
     "common": ("Sync behaviour", [
         ("poll_interval_minutes", "Poll Hardcover every (minutes)", "int"),
         ("min_update_interval_seconds", "Min seconds between progress updates", "int"),
@@ -276,6 +280,9 @@ class Api:
                 from .hardcover import HardcoverClient
                 HardcoverClient(self.cfg["hardcover"]["token"]).user_id
                 return {"ok": True, "message": "Hardcover token OK"}
+            if key == "bookorbit":
+                me = self.e.bookorbit().me() or {}
+                return {"ok": True, "message": f"BookOrbit OK: signed in as {me.get('username') or '?'}"}
             p = self.e.provider(key)
             if not p:
                 raise ApiError(404, "unknown service")
@@ -600,6 +607,7 @@ def make_handler(hub, cfg, server_log):
                 if path == "/api/removals": return api.e.pending_removals()
                 if path == "/api/hardcover/dates": return dict(api.e.dates_job)
                 if path == "/api/matching": return api.e.matching_status()
+                if path == "/api/bookorbit": return dict(api.e.bo_job)
                 m = re.fullmatch(r"/api/book/(\d+)", path)
                 if m: return api.book(int(m.group(1)))
                 m = re.fullmatch(r"/api/book/(\d+)/cover", path)
@@ -615,6 +623,13 @@ def make_handler(hub, cfg, server_log):
                 if path == "/api/removals": return api._guard(api.e.resolve_removals, bool(body.get("remove")))
                 if path == "/api/hardcover/dates/scan": return dict(api._guard(api.e.start_dates_scan))
                 if path == "/api/matching/reset": return api.e.reset_matching()
+                if path == "/api/bookorbit/scan": return dict(api._guard(api.e.start_bookorbit_scan, bool(body.get("full"))))
+                if path == "/api/bookorbit/apply":
+                    keys = body.get("keys")
+                    if not isinstance(keys, list) or not all(isinstance(k, str) for k in keys):
+                        raise ApiError(400, "Send keys: a list of book keys")
+                    return dict(api._guard(api.e.apply_bookorbit, keys))
+                if path == "/api/bookorbit/suggestion": return api._guard(api.e.bookorbit_use_suggestion, str(body.get("key") or ""))
                 if path == "/api/hardcover/dates/apply":
                     keys = body.get("keys")
                     if not isinstance(keys, list) or not all(isinstance(k, str) for k in keys):

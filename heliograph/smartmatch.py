@@ -99,8 +99,22 @@ def _tokens(title):
         elif tok in WORDS and out and out[-1] == "vol":
             out.append(str(WORDS[tok]))
         else:
-            out.append(tok)
+            out.append(SYNONYMS.get(tok, tok))
     return out
+
+
+SYNONYMS = {"vs": "versus", "v": "versus", "mr": "mister", "mrs": "missus", "dr": "doctor", "st": "saint",
+            "colour": "color", "honour": "honor", "favourite": "favorite"}
+
+
+def _contained(a, b):
+    """The shorter title appears whole inside the longer one ("The Knights of Crystallia" in "Alcatraz Versus the
+    Knights of Crystallia"; "A Journey Through…" in "Harry Potter: A Journey Through…"). Needs 3+ words and half
+    the longer title, so "Dune" isn't "contained" in "Dune Messiah"."""
+    short, long_ = (a, b) if len(a) <= len(b) else (b, a)
+    if len(short) < 3 or len(short) * 2 < len(long_):
+        return False
+    return any(long_[i:i + len(short)] == short for i in range(len(long_) - len(short) + 1))
 
 
 def _sim(a, b):
@@ -161,6 +175,8 @@ def assess(title, authors, cand, isbns=(), pages=None, rank=0):
     isbn = 1.0 if cand.get("isbn") and str(cand["isbn"]) in {str(i) for i in isbns or ()} else 0.0
     if isbn:
         reasons.append("same ISBN")
+    if t < ACCEPT_TITLE and main < 0.95 and _contained(ours, theirs):
+        main = 0.95                       # treated like a subtitle: never linked without ISBN/page evidence
     subtitle_only = 1.0 if t < ACCEPT_TITLE and main >= 0.95 else 0.0
     if subtitle_only:
         reasons.append("same title apart from a subtitle")

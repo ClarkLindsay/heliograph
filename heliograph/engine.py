@@ -2,7 +2,7 @@ import csv, io, json, logging, threading, time
 from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-from . import dates, smartmatch
+from . import bookorbit, dates, smartmatch
 from .config import APP_DIR
 from .hardcover import HardcoverClient
 from .providers.base import AuthError, is_audio
@@ -42,6 +42,7 @@ class Engine:
         self.job = {"running": False}
         self.ed_job = {"running": False}
         self.dates_job = {"running": False}
+        self.bo_job = {"running": False}
         self.job_entries, self.job_results = [], []
         self.import_dir = (Path(data_dir) if data_dir else APP_DIR) / "imports"      # each user's own import logs
         self._covers = {}
@@ -103,6 +104,7 @@ class Engine:
             except Exception as e:
                 self.log.error("Checking for books removed from Hardcover failed: %s", e)
             self.refresh_profile_links()
+            self.bookorbit_ebooks()
             return n
         except Exception as e:
             self.status["result"] = f"error: {e}"
@@ -622,6 +624,146 @@ class Engine:
             job["message"] = f"Failed: {e}"
         finally:
             job.update(running=False, finished=time.time())
+
+    # ---- BookOrbit: right Hardcover book + edition for every book, English, language normalised
+    def bookorbit(self):
+        c = self.config["bookorbit"]
+        return bookorbit.BookOrbitClient(c.get("url"), c.get("api_key"))
+
+    def _bo_seen(self):
+        try:
+            return json.loads(self.state.get("bookorbit_seen") or "{}")
+        except (TypeError, ValueError):
+            return {}
+
+    def start_bookorbit_scan(self, full=False):
+        if self.bo_job.get("running"):
+            raise ValueError("A BookOrbit scan or update is already running")
+        client = self.bookorbit()
+        self.bo_job = {"running": True, "phase": "scan", "items": [], "done": 0, "total": 0, "skipped": 0,
+                       "started": time.time(), "finished": 0, "message": "Reading your BookOrbit library…"}
+        threading.Thread(target=self._bo_scan, args=(client, bool(full)), daemon=True, name="bookorbit").start()
+        return self.bo_job
+
+    def _bo_scan(self, client, full):
+        job = self.bo_job
+        try:
+            books = client.books()
+            job["total"] = len(books)
+            look, seen, items = bookorbit.HardcoverLookup(self.hc()), self._bo_seen(), []
+            for b in books:
+                sig = bookorbit.signature(b)
+                if not full and seen.get(str(b["id"])) == sig:
+                    job["skipped"] += 1
+                else:
+                    job["message"] = f"Checking '{b.get('title')}' on Hardcover…"
+                    try:
+                        p = bookorbit.plan_book(b, look, self.matcher)
+                    except Exception as e:
+                        p = {"id": b["id"], "title": b.get("title") or "", "authors": b.get("authors") or [], "changes": {},
+                             "why": [], "fix": "error", "problem": f"couldn't check: {str(e)[:150]}"}
+                    if p["fix"] == "ok" and not p.get("problem"):
+                        seen[str(b["id"])] = sig
+                    else:
+                        p.update(key=str(b["id"]), result="", pick=bool(p["changes"]))
+                        items.append(p)
+                        job["items"] = items
+                job["done"] += 1
+            self.state.set("bookorbit_seen", json.dumps(seen))
+            counts = {}
+            for p in items:
+                counts[p["fix"]] = counts.get(p["fix"], 0) + 1
+            job["counts"] = counts
+            fixable = sum(1 for p in items if p["changes"])
+            job["message"] = (f"{len(books)} books: {fixable} to fix" + (f", {len(items) - fixable} to look at" if len(items) > fixable else "")
+                              + (f", {job['skipped']} already right" if job["skipped"] else "")) if items else \
+                f"All {len(books)} books have the right Hardcover book, edition and language"
+            self.log.info("BookOrbit: %s", job["message"])
+        except Exception as e:
+            self.log.error("BookOrbit scan failed: %s", e)
+            job["message"] = f"Failed: {e}"
+        finally:
+            job.update(running=False, finished=time.time())
+
+    def apply_bookorbit(self, keys):
+        job = self.bo_job
+        if job.get("running"):
+            raise ValueError("A BookOrbit scan or update is already running")
+        keys = set(keys or ())
+        todo = [p for p in job.get("items") or [] if p["key"] in keys and p["changes"] and not p["result"].startswith("✓")]
+        if not todo:
+            raise ValueError("Select at least one change")
+        client = self.bookorbit()
+        job.update(running=True, phase="apply", done=0, total=len(todo), message="Updating BookOrbit…")
+        threading.Thread(target=self._bo_apply, args=(client, todo), daemon=True, name="bookorbit-apply").start()
+        return job
+
+    def _bo_apply(self, client, todo):
+        job, ok = self.bo_job, 0
+        seen = self._bo_seen()
+        try:
+            for p in todo:
+                try:
+                    client.update(p["id"], p["changes"])
+                    p["result"] = "✓ updated"; ok += 1
+                    self.log.info("BookOrbit: '%s' %s", p["title"], ", ".join(f"{k}={v}" for k, v in p["changes"].items()))
+                    if not p.get("problem"):
+                        seen[str(p["id"])] = bookorbit.signature(dict(p.get("source") or {}, **p["changes"]))
+                except Exception as e:
+                    p["result"] = f"error: {str(e)[:200]}"
+                job["done"] += 1
+            self.state.set("bookorbit_seen", json.dumps(seen))
+            job["message"] = f"Done: {ok} book(s) updated in BookOrbit" + (f", {len(todo) - ok} failed" if ok < len(todo) else "")
+        except Exception as e:
+            job["message"] = f"Failed: {e}"
+        finally:
+            job.update(running=False, finished=time.time())
+
+    def bookorbit_use_suggestion(self, key):
+        """You accepted a suggested Hardcover book: work out its edition and write both."""
+        p = next((x for x in self.bo_job.get("items") or [] if x["key"] == key), None)
+        if not p or not p.get("suggestion"):
+            raise KeyError("no suggestion for that book")
+        look = bookorbit.HardcoverLookup(self.hc())
+        s = p["suggestion"]
+        ed = bookorbit.pick_edition(look.editions(s["id"]), p["kind"], [i for i in (p.get("isbn13"), p.get("isbn10")) if i])
+        if not ed:
+            raise ValueError("Hardcover has no English edition of that book")
+        changes = dict(p["changes"], hardcoverId=s.get("slug") or str(s["id"]), hardcoverEditionId=str(ed["id"]))
+        self.bookorbit().update(p["id"], changes)
+        p.update(changes=changes, result="✓ updated", problem=None, suggestion=None)
+        self.log.info("BookOrbit: '%s' linked to Hardcover '%s' (your choice), edition %s", p["title"], s["title"], ed["id"])
+        return p
+
+    def bookorbit_ebooks(self, force=False):
+        """An audiobook you've since added an ebook to: switch its Hardcover edition to the ebook (if you allow it)."""
+        c = self.config["bookorbit"]
+        if not (c.get("url") and c.get("api_key") and c.get("auto_ebook")):
+            return 0
+        last = float(self.state.get("bookorbit_ebooks_at") or 0)
+        if not force and time.time() - last < 6 * 3600:
+            return 0
+        self.state.set("bookorbit_ebooks_at", str(time.time()))
+        seen, n = self._bo_seen(), 0
+        try:
+            client = self.bookorbit()
+            look = None
+            for b in client.books():
+                was = (seen.get(str(b["id"])) or "").split("|")[0]
+                if was != "audio" or bookorbit.kind(b) != "ebook" or not b.get("hardcoverId"):
+                    continue
+                look = look or bookorbit.HardcoverLookup(self.hc())
+                p = bookorbit.plan_book(b, look, self.matcher)
+                edit = {k: v for k, v in p["changes"].items() if k in ("hardcoverEditionId", "language")}
+                if "hardcoverEditionId" in edit and "hardcoverId" not in p["changes"]:
+                    client.update(b["id"], edit)
+                    n += 1
+                    self.log.info("BookOrbit: '%s' now has an ebook: Hardcover edition switched to %s", b.get("title"), edit["hardcoverEditionId"])
+                seen[str(b["id"])] = bookorbit.signature(dict(b, **edit))
+            self.state.set("bookorbit_seen", json.dumps(seen))
+        except Exception as e:
+            self.log.warning("BookOrbit ebook check failed: %s", e)
+        return n
 
     def apply_dates(self, keys):
         job = self.dates_job

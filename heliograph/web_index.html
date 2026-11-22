@@ -55,8 +55,8 @@ function mono(key){const b=BRAND[key]||['#666',(key||'?')[0].toUpperCase()];cons
 const safeUrl=u=>/^https?:\/\/\S+$/.test(u||'');
 function homeIcon(x,px){const i=icon(x.key,px||22);return safeUrl(x.home)?h('a',{href:x.home,target:'_blank',rel:'noopener noreferrer',title:'Open '+x.label},i):i}
 function icon(key,px){const i=h('img',{src:'/icons/'+key,width:px,height:px,alt:'',class:'ico'});let done=false;i.addEventListener('error',()=>{if(!done){done=true;i.setAttribute('src',mono(key))}});return i}
-function setTab(t){tab=t;tabToken++;clearTimeout(timer);timer=null;onClose=null;$('#nav').replaceChildren(...[['dash','Dashboard'],['books','Books'],['import','Import'],['hardcover','Hardcover'],['settings','Settings'],['account',me.admin?'Users':'Account']].map(([k,l])=>h('button',{class:tab===k?'on':'',onclick:()=>setTab(k)},l)));
- ({dash:dash,books:books,import:importTab,hardcover:hardcoverTab,settings:settings,account:account})[t]()}
+function setTab(t){tab=t;tabToken++;clearTimeout(timer);timer=null;onClose=null;$('#nav').replaceChildren(...[['dash','Dashboard'],['books','Books'],['import','Import'],['hardcover','Hardcover'],['bookorbit','BookOrbit'],['settings','Settings'],['account',me.admin?'Users':'Account']].map(([k,l])=>h('button',{class:tab===k?'on':'',onclick:()=>setTab(k)},l)));
+ ({dash:dash,books:books,import:importTab,hardcover:hardcoverTab,bookorbit:bookorbitTab,settings:settings,account:account})[t]()}
 
 /* Account: your password; the admin also manages users and invite codes. */
 function account(){const m=$('#main'),tok=tabToken;
@@ -185,6 +185,56 @@ function hardcoverTab(){const m=$('#main'),tok=tabToken,u={};
     h('p',{class:'small mut'},'Finds books in your Hardcover library whose edition isn’t in your Preferred edition language (Settings), and lets you switch each to an edition in that language. Your status, rating and dates stay; reading sessions on the old edition move with it.'),
     h('div',{class:'row'},h('span',{class:'grow'}),u.hcFind),u.hcOut,u.hcList));
   loop(async()=>{try{return await poll()}catch(e){note(d.out,e.message,'bad');return 8000}},tok)}
+
+/* BookOrbit: the right Hardcover book and edition for every book, so BookOrbit's own Hardcover sync is ready. */
+function bookorbitTab(){const m=$('#main'),tok=tabToken;
+ const FIX={relink:'Wrong Hardcover book',link:'Not linked yet',edition:'Edition',language:'Language',ok:'Needs a look',error:'Error'};
+ const d={msg:h('div',{class:'small'}),bar:h('i',{style:'width:0%'}),list:h('div'),out:h('div'),sel:new Set(),seen:0,picked:0,sig:'',items:[],filter:''};
+ const isDone=i=>/^✓/.test(i.result||'');
+ const full=h('input',{type:'checkbox'});
+ d.scan=h('button',{class:'btn',onclick:async()=>{try{await api('/api/bookorbit/scan',{full:full.checked});setTimeout(()=>tok===tabToken&&poll(),300)}catch(e){note(d.out,e.message,'bad')}}},'Scan BookOrbit');
+ d.apply=h('button',{class:'btn pri',style:'display:none',onclick:async()=>{
+   const keys=d.items.filter(i=>d.sel.has(i.key)&&!isDone(i)&&Object.keys(i.changes).length).map(i=>i.key);
+   if(!confirm(`Update ${keys.length} book(s) in BookOrbit?`))return;
+   try{await api('/api/bookorbit/apply',{keys});setTimeout(()=>tok===tabToken&&poll(),300)}catch(e){note(d.out,e.message,'bad')}}},'Apply');
+ const pick=f=>{d.sel.clear();d.items.forEach(i=>{if(!isDone(i)&&Object.keys(i.changes).length&&f(i))d.sel.add(i.key)});d.sig='';render()};
+ const link=(t,f)=>h('a',{href:'#',onclick:e=>{e.preventDefault();pick(f)}},t);
+ d.bulk=h('span',{class:'small',style:'display:none'},'Select ',link('all',()=>true),' · ',link('none',()=>false));
+ d.filters=h('div',{class:'row small',style:'margin-top:6px'});
+ const ch=c=>{const v=d.items.filter(i=>i.fix===c);return v.length?h('a',{href:'#',class:'chip'+(d.filter===c?' recorded':''),onclick:e=>{e.preventDefault();d.filter=d.filter===c?'':c;d.sig='';render()}},`${FIX[c]||c} (${v.length})`):null};
+ function line(i){const done=isDone(i),has=Object.keys(i.changes).length;
+  const cb=has?h('input',{type:'checkbox',checked:d.sel.has(i.key)&&!done,disabled:done||d.running,onchange:e=>{e.target.checked?d.sel.add(i.key):d.sel.delete(i.key);d.sig='';render()}}):h('span',{style:'width:13px'});
+  const res=h('span',{class:'small'});
+  const sug=i.suggestion?h('div',{class:'small'},'Suggested: ',h('b',{},i.suggestion.title),' · '+(i.suggestion.authors||[]).slice(0,2).join(', '),
+    h('span',{class:'mut'},` · ${pct(i.suggestion.confidence)} sure: ${i.suggestion.reasons.join('; ')}`),' ',
+    h('a',{href:`https://hardcover.app/books/${i.suggestion.slug||i.suggestion.id}`,target:'_blank',rel:'noopener noreferrer'},'view'),' ',
+    h('button',{class:'btn small pri',disabled:d.running,onclick:async e=>{e.target.disabled=true;try{const r=await api('/api/bookorbit/suggestion',{key:i.key});Object.assign(i,r);d.sig='';render()}catch(x){e.target.disabled=false;res.textContent=' '+x.message}}},'Use this')):null;
+  const hc=i.book?h('a',{class:'small',href:`https://hardcover.app/books/${i.book.slug||i.book.id}`,target:'_blank',rel:'noopener noreferrer'},'Hardcover ↗'):null;
+  return h('div',{class:'cand',style:'align-items:flex-start'},cb,h('div',{class:'grow'},
+    h('div',{},h('b',{},i.title),h('span',{class:'small mut'},' · '+(i.authors||[]).slice(0,2).join(', ')+` · ${i.kind}`),' ',hc),
+    i.why&&i.why.length?h('div',{class:'small'},i.why.join(' · ')):null,
+    i.problem?h('div',{class:'small',style:'color:var(--warn)'},i.problem):null,sug,res,
+    i.result?h('div',{class:'small',style:`color:var(--${done?'ok':'bad'})`},i.result):null))}
+ function render(){const items=d.items,sg=sigOf([items.map(i=>[i.key,i.result,Object.keys(i.changes).length]),[...d.sel],d.running,d.filter]);
+  const n=items.filter(i=>d.sel.has(i.key)&&!isDone(i)&&Object.keys(i.changes).length).length,show=items.length&&!d.running;
+  d.apply.style.display=show?'':'none';d.apply.disabled=!n;setText(d.apply,`Apply ${n} change(s)`);d.bulk.style.display=show?'':'none';
+  if(sg===d.sig)return;d.sig=sg;
+  fill(d.filters,['relink','link','edition','language','ok','error'].map(ch));
+  const vis=d.filter?items.filter(i=>i.fix===d.filter):items;
+  fill(d.list,vis.length?h('div',{style:'margin-top:6px'},vis.slice(0,400).map(line),vis.length>400?h('p',{class:'small mut'},`…and ${vis.length-400} more (use the filters).`):null):null)}
+ async function poll(){const j=await api('/api/bookorbit');if(tok!==tabToken)return 8000;
+  if(j.started&&j.started!==d.seen){d.seen=j.started;d.sel.clear();d.picked=0}
+  if(j.phase==='scan'&&!j.running&&j.started&&d.picked!==j.started){d.picked=j.started;(j.items||[]).forEach(i=>{if(i.pick)d.sel.add(i.key)})}
+  d.items=j.items||[];d.running=!!j.running;d.scan.disabled=d.running;
+  d.bar.style.width=(j.total?Math.round(100*j.done/j.total):0)+'%';
+  setText(d.msg,j.started?(j.message||'')+(j.running?` · ${j.done}/${j.total}`:''):'');
+  render();return j.running?1500:8000}
+ fill(m,h('div',{class:'card'},h('h3',{},'BookOrbit: Hardcover books and editions'),
+   h('p',{class:'small mut'},'Gets every book in your BookOrbit library ready for BookOrbit’s own Hardcover sync. For each book it checks the linked Hardcover book (wrong ones are replaced, missing ones found by ISBN, then title and author, with smart matching) and picks the English edition that matches your files: an ebook file → the ebook edition; only audio → the audiobook edition; neither → print. It never picks an audiobook when you have the ebook, and normalises the language field to “eng”. Nothing changes until you press Apply. Books found right are remembered and skipped next time unless they change.'),
+   h('div',{class:'row'},h('span',{class:'grow'},d.msg),h('label',{class:'small'},full,' Recheck every book'),d.bulk,d.scan,d.apply),
+   h('div',{class:'prog'},h('div',{class:'bar'},d.bar)),d.out,d.filters,d.list),
+  h('p',{class:'small mut',style:'margin-top:10px'},'Set the BookOrbit URL and API key in Settings → BookOrbit. With “switch its Hardcover edition to the ebook” on, Heliograph checks every 6 hours for audiobooks you’ve added an ebook to and moves them to the ebook edition.'));
+ loop(async()=>{try{return await poll()}catch(e){note(d.out,e.message,'bad');return 8000}},tok)}
 
 function importTab(){const m=$('#main'),tok=tabToken;let ui=null;fill(m,h('p',{class:'mut'},'Loading…'));
  const LBL={reading:'Reading',read:'Read',want:'Want to read',paused:'Paused',dnf:'Did not finish'};
