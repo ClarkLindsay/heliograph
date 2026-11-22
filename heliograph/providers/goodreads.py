@@ -709,7 +709,7 @@ class Goodreads(Provider):
             **self.XHR, "X-Prototype-Version": "1.7", "Referer": BASE + "/",
             "Accept": "text/javascript, text/html, application/xml, text/xml, */*",
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"})
-        if status == "read":      # plugin's onMarkedFinished -> setDateFinished; best effort, like its pending-retry
+        if status == "read" and book.finished_on:     # Hardcover's finish date; none there = none invented here
             try:
                 self.set_date_finished(remote_id, book.finished_on)
             except (ProviderError, requests.RequestException, ValueError) as e:

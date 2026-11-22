@@ -530,9 +530,8 @@ class LibraryThing(Provider):
         self._move_to_status_collection(st, status)
         if status == "reading":
             self._start_read(st)
-        elif status == "read":
-            date = book.finished_on[:10] if book.finished_on else time.strftime("%Y-%m-%d")
-            self._finish_read(st, date)
+        elif status == "read" and book.finished_on:  # no finish date in Hardcover: none invented here
+            self._finish_read(st, book.finished_on[:10])
 
     def normalize_rating(self, rating):
         return int(float(rating) * 2) / 2

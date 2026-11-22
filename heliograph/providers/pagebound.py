@@ -31,14 +31,12 @@ def status_payload(status, existing, finished_on=None):
     started = existing and existing.get("started_reading_at")
     finished = existing and existing.get("finished_reading_at")
     was_finished = existing and existing.get("status") == "finished"
-    if not started or (status == "reading" and was_finished):
+    if status == "reading" and (not started or was_finished):
         started = today
     if status == "read" and finished_on:
-        finished = form_date(finished_on) or today       # Hardcover's own finish date
-    elif status == "read" or not finished:
-        finished = today
+        finished = form_date(finished_on) or finished    # Hardcover's own finish date; none there = none invented
     e = existing or {}
-    return {
+    body = {
         "user_book": {"owned": bool(e.get("owned")), "muted": bool(e.get("muted"))},
         "shelf_ids": [s.get("id", s.get("shelf_id")) if isinstance(s, dict) else s for s in e.get("shelves") or []],
         "status": SYSTEM[status], "date": e.get("date_added") or today,
@@ -47,6 +45,10 @@ def status_payload(status, existing, finished_on=None):
         "tracking_mode": e.get("tracking_mode") or "pages", "total_page_count": "",
         "total_minutes": (e.get("total_minutes") or 0) if existing else None,
     }
+    for k in ("started_reading_at", "finished_reading_at"):
+        if not body[k]:
+            body.pop(k)                                   # Pagebound rejects a blank date; leaving it out is fine
+    return body
 
 
 class Pagebound(Provider):

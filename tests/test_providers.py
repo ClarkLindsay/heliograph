@@ -231,6 +231,9 @@ def test_goodreads_writes_and_headers():
         with mock.patch("requests.request", side_effect=fake), mock.patch.object(p, "set_date_finished") as dated:
             p.set_status("77", "reading", b); p.set_progress("77", b, True, 200); p.set_progress("77", b, False, 200)
             p.set_rating("77", 4.4, b); p.set_status("77", "read", b)
+            assert dated.call_count == 0                     # no finish date in Hardcover: none invented
+            b.finished_on = "2026-02-03"; p.set_status("77", "read", b)
+            dated.assert_called_once_with("77", "2026-02-03")
         posts = [x for x in calls if x[0] == "POST"]
         assert posts[0][2] == {"book_id": "77", "name": "currently-reading", "a": ""}
         assert posts[0][4]["X-Prototype-Version"] == "1.7" and posts[0][4]["X-CSRF-Token"] == "C" and posts[0][4]["Cookie"] == "a=1"
@@ -636,6 +639,9 @@ def test_pagebound_flow():
         put = [x for x in calls if x[0] == "PUT"][-1]
         assert put[2]["status"] == "finished" and put[2]["finished_reading_at"] == "2/3/2026"
         assert pb.status_payload("reading", None)["total_minutes"] is None
+        undated = pb.status_payload("read", None)                          # no dates in Hardcover: none sent
+        assert "finished_reading_at" not in undated and "started_reading_at" not in undated
+        assert "started_reading_at" in pb.status_payload("reading", None)   # starting a book is dated today
         calls.clear()                              # already rated: the review is changed in place, never posted again
         def rated(method, url, **kw):
             path = url.replace(pb.API, "")
