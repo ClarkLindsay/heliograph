@@ -1,5 +1,6 @@
 import json, logging, sys, os, tempfile, time
 from unittest import mock
+from urllib.parse import urlparse
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
 from heliograph import matching
 from heliograph.config import Config
@@ -19,7 +20,9 @@ class Resp:
 
 
 def cfg(tmp):
-    return Config(os.path.join(tmp, "c.json"))
+    c = Config(os.path.join(tmp, "c.json"))
+    c["goodreads"]["request_delay_seconds"] = 0          # no real pacing against mocked HTTP
+    return c
 
 
 # ------------------------------------------------------------------ matching (ported scoring)
@@ -33,6 +36,21 @@ def test_matching():
     assert matching.best_match("Dune", ["Frank Herbert"], cands) is None
     assert matching.best_match("The Hobbit", ["T"], [{"title": "The Hobbitt", "authors": ["Unknown Author"]}]) is None
     assert matching.score("A & B", ["x"], "A and B", ["x"]) is not None
+    # co-written book, service lists only the main author
+    assert matching.score("White Sand Omnibus", ["Brandon Sanderson", "Rik Hoskin", "Isaac Stewart"],
+                          "White Sand Omnibus", ["Brandon Sanderson"]) is not None
+    assert matching.score("White Sand Omnibus", ["Brandon Sanderson", "Rik Hoskin"], "White Sand Omnibus", ["Someone Else"]) is None
+    # Hardcover's subtitle dropped by the service: matches, but ranks below a full-title match
+    hob = [{"id": "slip", "title": "The Hobbit (Part 1 and 2) Slipcase", "authors": ["J.R.R. Tolkien"]},
+           {"id": "plain", "title": "The Hobbit ", "authors": ["J.R.R. Tolkien"]},
+           {"id": "gn", "title": "The Hobbit: or There and Back Again (Graphic Novel, Book 3)", "authors": ["Chuck Dixon"]}]
+    assert matching.best_match("The Hobbit, or There and Back Again", ["J.R.R. Tolkien"], hob)["id"] == "plain"
+    assert matching.best_match("The Hobbit, or There and Back Again", ["J.R.R. Tolkien"], hob[:1]) is None   # slipcase isn't the book
+    assert matching.best_match("The Hobbit, or There and Back Again", [], hob[1:2]) is None                  # never without an author
+    # their subtitle is never dropped: a bare title can't grab one volume of a series
+    vols = [{"id": 1, "title": "Vampire: The Masquerade — Winter’s Teeth, Vol. 1", "authors": ["Tim Seeley"]}]
+    assert matching.best_match("Vampire", ["Tim Seeley"], vols) is None
+    assert matching.score("Winter’s Teeth, Vol. 2", ["Tim Seeley"], "Winter's Teeth, Vol. 2", ["Tim Seeley"]) is not None
 
 
 def test_page_mapping():
@@ -64,7 +82,7 @@ def test_goodreads_refresher_on_waf():
         p = gr.Goodreads(c, LOG); seen = []
         def fake(method, url, **kw):
             seen.append((method, url, kw["headers"].get("Cookie")))
-            if url.startswith("http://host.docker"):
+            if urlparse(url).hostname == "host.docker.internal":
                 assert kw["headers"]["X-Auth-Token"] == "T"
                 return Resp(200, "new=2")
             if kw["headers"]["Cookie"].startswith("old"):
@@ -76,13 +94,45 @@ def test_goodreads_refresher_on_waf():
         assert seen[2][2] == "new=2"
 
 
+def test_goodreads_cools_down_after_uncleared_waf():
+    with tempfile.TemporaryDirectory() as tmp:
+        c = cfg(tmp); c["goodreads"].update(enabled=True, cookie="old=1", cookie_refresh_url="http://r:5080")
+        p = gr.Goodreads(c, LOG); seen = []
+        def fake(method, url, **kw):
+            seen.append(url)
+            return Resp(503, "") if urlparse(url).hostname == "r" else Resp(202, "", {"x-amzn-waf-action": "challenge"})
+        with mock.patch("requests.request", side_effect=fake), mock.patch("time.sleep"):
+            try: p.check_auth(); assert False
+            except AuthError: pass
+            n = len(seen)
+            try: p.check_auth(); assert False
+            except AuthError as e: assert "pausing after a WAF challenge" in str(e)
+        assert len(seen) == n                                 # nothing sent to Goodreads while cooling down
+
+
+def test_goodreads_pacing_and_reuse():
+    with tempfile.TemporaryDirectory() as tmp:
+        c = cfg(tmp); c["goodreads"].update(enabled=True, cookie="a=1", request_delay_seconds=3)
+        p = gr.Goodreads(c, LOG); urls, slept = [], []
+        def fake(method, url, **kw):
+            urls.append((method, url))
+            return Resp(200, '<meta name="csrf-token" content="C">', url=url)
+        b = Book(1, "T", pages=40, total_pages=100)
+        with mock.patch("requests.request", side_effect=fake), mock.patch("time.sleep", side_effect=slept.append):
+            p._pages("77"); p._book_page("77")                # second fetch of the same book page is reused
+            p.set_status("77", "reading", b); p.set_progress("77", b, True, 200)
+        assert [u for m, u in urls if u.endswith("/book/show/77")] == [gr.BASE + "/book/show/77"]
+        assert sum(1 for m, u in urls if u == gr.BASE + "/") == 1      # one CSRF fetch for both writes
+        assert len(slept) == len(urls) - 1 and all(2.9 < s <= 3 for s in slept)   # steady gap between requests
+
+
 def test_goodreads_bootstraps_empty_cookie_from_refresher():
     with tempfile.TemporaryDirectory() as tmp:
         c = cfg(tmp); c["goodreads"].update(enabled=True, cookie="", cookie_refresh_url="http://r:5080")
         p = gr.Goodreads(c, LOG); seen = []
         def fake(method, url, **kw):
             seen.append((method, url))
-            return Resp(200, "boot=1") if url.startswith("http://r") else Resp(200, 'csrf-token', url=url)
+            return Resp(200, "boot=1") if urlparse(url).hostname == "r" else Resp(200, 'csrf-token', url=url)
         with mock.patch("requests.request", side_effect=fake):
             p.check_auth()
         assert seen[0] == ("GET", "http://r:5080/cookie") and c["goodreads"]["cookie"] == "boot=1"
@@ -304,6 +354,34 @@ def test_pagebound_search_candidates():
         assert (m.id, m.pages) == ("5:UU", 310)           # ISBN is skipped (no ISBN lookup), title matched by score
         with mock.patch("requests.get", return_value=Resp(200, hit)):
             assert p.find(Book(1, "Totally Different", authors=["Someone"]), True, True) is None
+        sent = []
+        def rec(url, **kw):
+            sent.append(kw["params"]); return Resp(200, hit)
+        with mock.patch("requests.get", side_effect=rec):
+            p.search_book("The Hobbit", ["J.R.R. Tolkien", "A `Quote"])
+        assert sent[0]["q"] == "The Hobbit" and sent[0]["query_by"] == "title"       # author kept out of the query...
+        assert sent[0]["filter_by"] == "author_name:=[`J.R.R. Tolkien`,`A Quote`]"   # ...and used as a filter instead
+        assert "filter_by" not in sent[1] and sent[1]["q"] == "The Hobbit"            # then the title alone
+
+
+def test_pagebound_link_from_url():
+    with tempfile.TemporaryDirectory() as tmp:
+        c = cfg(tmp); c["pagebound"].update(enabled=True, id_token="I", refresh_token="R", api_token="A", token_expires_at=time.time() + 3000)
+        p = pb.Pagebound(c, LOG)
+        u = "8804d280-1d5a-4f53-8f31-d46b4d4d81b2"
+        assert p.parse_ref(f"https://pagebound.co/books/{u}") == ":" + u
+        assert p.parse_ref(f"https://pagebound.co/books/{u.upper()}?ref=x") == ":" + u
+        assert p.parse_ref(u) == ":" + u and p.parse_ref("5:" + u) == "5:" + u
+        assert p.parse_ref("https://pagebound.co/") is None and p.parse_ref("hello") is None
+        seen = []
+        def fake(method, url, **kw):
+            seen.append(url.replace(pb.API, ""))
+            return Resp(200, {"book": {"id": 4242, "uuid": u, "page_count": 310, "user_book": None}})
+        with mock.patch("requests.request", side_effect=fake):
+            m = p.finalize({"id": ":" + u})
+        assert (m.id, m.pages) == (f"4242:{u}", 310) and seen == [f"/api/v1/books/{u}"]
+        assert p.finalize({"id": "5:UU", "pages": 9}).id == "5:UU"          # picker candidates need no lookup
+        assert p.book_url(f"4242:{u}") == f"https://pagebound.co/books/{u}"
 
 
 # ------------------------------------------------------------------ config
@@ -327,11 +405,12 @@ def test_env_overrides():
 
 
 ALL = [test_matching, test_page_mapping, test_goodreads_helpers, test_goodreads_refresher_on_waf,
+       test_goodreads_cools_down_after_uncleared_waf, test_goodreads_pacing_and_reuse,
        test_goodreads_bootstraps_empty_cookie_from_refresher, test_goodreads_auth_failure_without_refresher,
        test_goodreads_writes_and_headers, test_goodreads_date_finished_flow, test_goodreads_finished_sessions_logic,
        test_storygraph_search_and_status_parsing, test_storygraph_edition_redirect_and_audio_refusal,
        test_storygraph_writes, test_storygraph_form_roundtrip, test_fable_flow, test_pagebound_flow,
-       test_pagebound_search_candidates, test_env_overrides]
+       test_pagebound_search_candidates, test_pagebound_link_from_url, test_env_overrides]
 
 if __name__ == "__main__":
     for t in ALL:

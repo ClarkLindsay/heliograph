@@ -112,12 +112,32 @@ class Pagebound(Provider):
 
     # ---- search (Typesense: title/author only, no ISBN lookup - same as the plugin)
     def search(self, query):
+        """Free-text search, as typed into the web UI's search box."""
+        return self._typesense(query, "title,author_name", limit=15)
+
+    def search_book(self, title, authors):
+        """Search for a known book. Putting the author into the query makes Typesense rank books with that name in
+        their *title* (comics, box sets, biographies) above the book itself, so search the title only, restricted to
+        the book's authors, then the title alone in case Pagebound spells the author differently."""
+        out, seen = [], set()
+        names = [a.replace("`", "") for a in authors if a and a.strip()][:5]
+        queries = [dict(filter_by="author_name:=[" + ",".join(f"`{a}`" for a in names) + "]")] if names else []
+        for extra in queries + [{}]:
+            for c in self._typesense(title, "title", limit=15, **extra):
+                if c["id"] not in seen:
+                    seen.add(c["id"]); out.append(c)
+        return out
+
+    def _typesense(self, query, query_by, limit, filter_by=None):
         if not query.strip():
             return []
+        params = {"q": query, "query_by": query_by, "limit": limit, "num_typos": 2,
+                  "split_join_tokens": "always", "typo_tokens_threshold": 6}
+        if filter_by:
+            params["filter_by"] = filter_by
         r = requests.get(TYPESENSE_URL + "/collections/books/documents/search", timeout=30,
                          headers={"X-TYPESENSE-API-KEY": TYPESENSE_KEY, "Accept": "application/json"},
-                         params={"q": query, "query_by": "title,author_name", "limit": 6, "num_typos": 2,
-                                 "split_join_tokens": "always", "typo_tokens_threshold": 6})
+                         params=params)
         if r.status_code != 200:
             raise ProviderError(f"Pagebound search failed (HTTP {r.status_code})")
         out = []
@@ -132,8 +152,29 @@ class Pagebound(Provider):
         return out
 
     def parse_ref(self, text):
+        """Accepts "<id>:<uuid>" (as shown in the picker), a book link (pagebound.co/books/<uuid>) or a bare uuid.
+        A link only carries the uuid; finalize() looks up the numeric id that writes need."""
         t = (text or "").strip()
-        return t if re.fullmatch(r"\d+:[0-9a-fA-F-]{8,}", t) else None      # "<id>:<uuid>", as shown in the picker
+        if re.fullmatch(r"\d+:[0-9a-fA-F-]{8,}", t):
+            return t
+        m = re.search(r"/books/([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})\b", t) \
+            or re.fullmatch(r"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})", t)
+        return ":" + m.group(1).lower() if m else None
+
+    def finalize(self, cand):
+        bid, uuid = self._split(str(cand["id"]))
+        if bid:
+            return Match(cand["id"], cand.get("pages"))
+        code, d = self._req(f"/api/v1/books/{uuid}")                 # pasted link: fetch the numeric id
+        b = (d or {}).get("book") if code == 200 else None
+        if not b or not b.get("id"):
+            raise ValueError(f"Pagebound has no book with id {uuid} (HTTP {code})")
+        pc = b.get("page_count")
+        return Match(f"{b['id']}:{b.get('uuid') or uuid}", int(pc) if pc else None)
+
+    def book_url(self, remote_id):
+        _, uuid = self._split(str(remote_id or ""))
+        return f"https://pagebound.co/books/{uuid}" if uuid else None
 
     @staticmethod
     def _split(rid):

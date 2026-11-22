@@ -10,6 +10,7 @@ and the "date read" through the Next.js review editor's server action.
 import html as htmllib, json, re, time
 from urllib.parse import quote, urljoin, urlparse
 import requests
+from bs4 import BeautifulSoup
 from .base import Provider, AuthError, ProviderError, Match, mapped_page, clean_cover
 
 BASE = "https://www.goodreads.com"
@@ -20,6 +21,8 @@ REFRESHER_TIMEOUT = 75
 REFRESH_TRIES = 3          # attempts at /refresh before giving up on a WAF/expired-session response
 REFRESH_WAIT = 10          # seconds between those attempts
 MAX_HOPS = 5
+CSRF_TTL = 15 * 60         # reuse the homepage's CSRF token this long instead of re-fetching it before every write
+PAGE_TTL = 120             # a book page fetched for matching is reused by the read-back right after it
 JSON = json.JSONDecoder()
 
 
@@ -76,10 +79,19 @@ def find_book_cache(data, query):
     return None
 
 
+def scripts(html, **attrs):
+    """The page's <script> elements, found by a real HTML parser (a regex misses variants like </script >)."""
+    return BeautifulSoup(html or "", "html.parser").find_all("script", **attrs)
+
+
+def script_texts(html, **attrs):
+    return [s.string or "" for s in scripts(html, **attrs)]
+
+
 def book_page_pages(html, book_id):
     """numPages from the page's Apollo cache (findUserBook's scrape)."""
     query = 'getBookByLegacyId({"legacyId":"%s"})' % book_id
-    for script in re.findall(r"<script[^>]*>(.*?)</script>", html, re.S):
+    for script in script_texts(html):
         if "getBookByLegacyId" not in script:
             continue
         try:
@@ -96,7 +108,7 @@ def book_page_pages(html, book_id):
 
 def book_apollo(html, book_id):
     query = 'getBookByLegacyId({"legacyId":"%s"})' % book_id
-    for script in re.findall(r"<script[^>]*>(.*?)</script>", html, re.S):
+    for script in script_texts(html):
         if "getBookByLegacyId" not in script:
             continue
         try:
@@ -160,7 +172,7 @@ def parse_search_results(html):
 # ---------- Next.js review-editor helpers (date read)
 def next_flight(html):
     rows = []
-    for script in re.findall(r"<script[^>]*>(.*?)</script\s*>", html, re.S):
+    for script in script_texts(html):
         pos = 0
         while True:
             i = script.find("self.__next_f.push", pos)
@@ -221,11 +233,8 @@ def parse_review_state(html):
 
 def chunk_paths(html):
     paths, seen = [], set()
-    for tag in re.findall(r"<script[^>]*>", html):
-        m = re.search(r"""\ssrc\s*=\s*("([^"]*)"|'([^']*)'|([^\s>]+))""", tag, re.I)
-        if not m:
-            continue
-        src = htmllib.unescape(m.group(2) or m.group(3) or m.group(4))
+    for tag in scripts(html, src=True):
+        src = (tag.get("src") or "").strip()                 # the parser has already decoded &amp; etc.
         mm = re.match(r"^https://www\.goodreads\.com(/_next/static/chunks/[^?#]+)$", src)
         path = mm.group(1) if mm else src
         unrelated = ("/polyfills-" in path or "/webpack-" in path or "/app/not-found-" in path
@@ -304,6 +313,25 @@ class Goodreads(Provider):
         super().__init__(config, log)
         self._jar = None          # (saved cookie it belongs to, merged cookie)
         self._action_cache = None
+        self._last_request = 0.0  # monotonic time of the last request to Goodreads (pacing)
+        self._cooldown_until = 0.0
+        self._csrf = None         # (token, fetched at)
+        self._page_cache = {}     # book id -> (fetched at, response)
+
+    def _pace(self):
+        """Keep a steady gap between Goodreads requests. Rapid bursts (an import does ~10 per book) are what
+        set off its WAF challenges, so this is the main way to avoid them."""
+        gap = max(0.0, float(self.cfg.get("request_delay_seconds") or 0))
+        wait = self._last_request + gap - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        self._last_request = time.monotonic()
+
+    def _check_cooldown(self):
+        left = self._cooldown_until - time.monotonic()
+        if left > 0:
+            raise AuthError(f"Goodreads: pausing after a WAF challenge the refresher couldn't clear; "
+                            f"trying again in {int(left // 60) + 1} min")
 
     # ---- cookie plumbing
     def _refresher(self, force):
@@ -332,14 +360,18 @@ class Goodreads(Provider):
     def _refresh_with_retry(self):
         """The refresher can time out while its browser is busy (or sitting behind a WAF page); give it a few chances."""
         tries, wait = REFRESH_TRIES, REFRESH_WAIT
-        for i in range(tries):
-            fresh = self._refresher(True)
-            if fresh:
-                return fresh
-            if i + 1 < tries:
-                self.log.info("Goodreads: cookie refresh failed, trying again in %ds (%d/%d)", wait, i + 2, tries)
-                time.sleep(wait)
-        return None
+        try:
+            for i in range(tries):
+                self.waiting_on = f"waiting for the cookie refresher, attempt {i + 1}/{tries}"   # shown in "busy" messages
+                fresh = self._refresher(True)
+                if fresh:
+                    return fresh
+                if i + 1 < tries:
+                    self.log.info("Goodreads: cookie refresh failed, trying again in %ds (%d/%d)", wait, i + 2, tries)
+                    time.sleep(wait)
+            return None
+        finally:
+            self.waiting_on = None
 
     def _current_cookie(self):
         saved = self.cfg.get("cookie") or self._refresher(False) or ""
@@ -358,6 +390,9 @@ class Goodreads(Provider):
         return h
 
     def _req(self, method, url, data=None, params=None, headers=None):
+        self._check_cooldown()
+        if method != "GET":
+            self._page_cache.clear()                      # a write may change what the cached pages show
         cookie = self._current_cookie()
         if not cookie:
             raise AuthError("Goodreads: no cookie set and the refresher gave none")
@@ -366,6 +401,7 @@ class Goodreads(Provider):
         r = None
         for hop in range(MAX_HOPS + 1):
             h = {**self._headers(headers), "Cookie": cookie}
+            self._pace()
             r = requests.request(meth, cur, headers=h, data=data if hop == 0 else None,
                                  params=params if hop == 0 else None, allow_redirects=False, timeout=30)
             if _is_goodreads(cur) and r.cookies.get_dict():
@@ -384,7 +420,13 @@ class Goodreads(Provider):
                     if fresh and fresh != cookie:
                         cookie, self._jar = fresh, (fresh, fresh)
                         sent_saved = fresh
+                        self._csrf = None                 # the token belongs to the old session
                         continue
+                if waf:
+                    mins = max(0.0, float(self.cfg.get("waf_cooldown_minutes") or 0))
+                    if mins:                              # stop instead of retrying into the same challenge
+                        self._cooldown_until = time.monotonic() + mins * 60
+                        self.log.warning("Goodreads: WAF challenge not cleared - leaving Goodreads alone for %g min", mins)
                 raise AuthError("Goodreads rejected the cookie (WAF challenge or signed out)"
                                 + ("" if self.cfg.get("cookie_refresh_url") else "; no Cookie Auto-Refresh URL configured"))
             is_redirect = r.status_code in (301, 302, 303, 307, 308) or (r.status_code == 200 and loc and loc != cur)
@@ -398,17 +440,21 @@ class Goodreads(Provider):
         r.final_url = cur
         return r
 
-    def _csrf_token(self):
+    def _csrf_token(self, fresh=False):
+        if not fresh and self._csrf and time.monotonic() - self._csrf[1] < CSRF_TTL:
+            return self._csrf[0]
         r = self._req("GET", BASE + "/")
         tok = extract_csrf(r.text)
         if not tok:
             raise ProviderError("Goodreads: CSRF token not found on the homepage")
+        self._csrf = (tok, time.monotonic())
         return tok
 
     def _post(self, url, data, custom, params=None, retry_403=True):
         r = self._req("POST", url, data=data, params=params, headers={**custom, "X-CSRF-Token": self._csrf_token()})
         if r.status_code == 403 and retry_403:           # plugin: retry once with a fresh session token
-            r = self._req("POST", url, data=data, params=params, headers={**custom, "X-CSRF-Token": self._csrf_token()})
+            r = self._req("POST", url, data=data, params=params,
+                          headers={**custom, "X-CSRF-Token": self._csrf_token(fresh=True)})
         if not 200 <= r.status_code < 300:
             raise ProviderError(f"Goodreads POST {urlparse(url).path} -> HTTP {r.status_code}")
         return r
@@ -430,9 +476,22 @@ class Goodreads(Provider):
             return "Goodreads cookie OK"
         raise AuthError(f"Goodreads: unexpected response checking the session (HTTP {r.status_code})")
 
+    def _book_page(self, book_id, keep=False):
+        """GET /book/show/<id>. Matching keeps the page (keep=True) so the read-back that follows right after uses
+        it instead of fetching it again; that read-back consumes it, so later reads always see a fresh page."""
+        hit = self._page_cache.pop(str(book_id), None)
+        if hit and time.monotonic() - hit[0] < PAGE_TTL:
+            return hit[1]
+        r = self._req("GET", f"{BASE}/book/show/{book_id}")
+        if keep and r.status_code == 200:
+            if len(self._page_cache) > 20:
+                self._page_cache.clear()
+            self._page_cache[str(book_id)] = (time.monotonic(), r)
+        return r
+
     def _pages(self, book_id):
         try:
-            r = self._req("GET", f"{BASE}/book/show/{book_id}")
+            r = self._book_page(book_id, keep=True)
             return book_page_pages(r.text, book_id) if r.status_code == 200 else None
         except (requests.RequestException, ProviderError):
             return None
@@ -443,12 +502,12 @@ class Goodreads(Provider):
             raise ProviderError(f"Goodreads search failed (HTTP {r.status_code})")
         m = re.search(r"/book/show/(\d+)", r.final_url)      # an exact single match redirects to the book page
         if m:
-            ld = re.search(r'<script type="application/ld\+json">(.*?)</script>', r.text, re.S)
-            t = re.search(r'"name":"(.*?)","image"', ld.group(1)) if ld else None
-            a = re.search(r'"author":\[\{"@type":"Person","name":"(.*?)"', ld.group(1)) if ld else None
+            ld = next(iter(script_texts(r.text, type="application/ld+json")), "")
+            t = re.search(r'"name":"(.*?)","image"', ld)
+            a = re.search(r'"author":\[\{"@type":"Person","name":"(.*?)"', ld)
             if not t:
                 return []
-            img = re.search(r'"image":"(.*?)","bookFormat"', ld.group(1))
+            img = re.search(r'"image":"(.*?)","bookFormat"', ld)
             return [{"id": m.group(1), "title": htmllib.unescape(t.group(1)),
                      "authors": [htmllib.unescape(a.group(1))] if a else ["Unknown Author"],
                      "cover": clean_cover(htmllib.unescape(img.group(1))) if img else None}]
@@ -465,7 +524,7 @@ class Goodreads(Provider):
         return quarter_stars(rating)
 
     def read_state(self, remote_id):
-        r = self._req("GET", f"{BASE}/book/show/{remote_id}")
+        r = self._book_page(remote_id)
         if r.status_code != 200:
             raise ProviderError(f"Goodreads book page HTTP {r.status_code}")
         v = viewer_shelf(r.text, remote_id)

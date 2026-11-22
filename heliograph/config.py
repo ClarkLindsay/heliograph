@@ -1,7 +1,9 @@
 """Config: /data/config.json (HELIOGRAPH_DIR) plus HELIOGRAPH__<section>__<key> environment overrides."""
-import copy, json, os
+import copy, json, os, threading
 from pathlib import Path
 from .crypto import Crypto, CryptoError, read_secret_file
+
+_SAVE_LOCK = threading.RLock()
 
 APP_DIR = Path(os.environ.get("HELIOGRAPH_DIR") or "/data")
 CONFIG_PATH = APP_DIR / "config.json"
@@ -17,6 +19,8 @@ DEFAULTS = {
         "cookie_refresh_url": "",     # base URL of goodreads-cookie-refresher
         "cookie_refresh_token": "",   # REFRESHER_AUTH_TOKEN, if set
         "user_agent": "",             # blank = same Firefox UA ShelfSync uses
+        "request_delay_seconds": 3,   # minimum gap between Goodreads requests; bursts are what trigger WAF challenges
+        "waf_cooldown_minutes": 15,   # after a challenge the refresher can't clear, leave Goodreads alone this long
         "home_url": "",               # where the dashboard icon links; blank = the service's homepage
     },
     "storygraph": {"enabled": False, "session_cookie": "", "remember_user_token": "", "home_url": ""},
@@ -131,6 +135,10 @@ class Config:
         return self.data[k]
 
     def save(self):
+        with _SAVE_LOCK:                             # services save their own tokens/cookies from different threads
+            self._save()
+
+    def _save(self):
         self.path.parent.mkdir(parents=True, exist_ok=True)
         out = copy.deepcopy(self.data)
         if self.crypto.enabled:                      # secrets are stored encrypted whenever a key is configured

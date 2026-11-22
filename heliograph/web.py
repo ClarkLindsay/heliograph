@@ -10,6 +10,8 @@ from .engine import Busy
 INDEX = Path(__file__).with_name("web_index.html")
 APP_ICON_KEY = "heliograph"          # icons/heliograph.png (or .svg/.webp/.jpg) in the data volume is the app's own icon / favicon
 FALLBACK_ICON = Path(__file__).with_name("heliograph.svg").read_bytes()   # built-in app icon / favicon
+ICON_TYPES = {"svg": "image/svg+xml", "png": "image/png", "webp": "image/webp", "jpg": "image/jpeg",
+              "jpeg": "image/jpeg", "gif": "image/gif"}
 HEADER = "X-Requested-With"
 HEADER_VALUE = "heliograph-ui"
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]", "::1"}
@@ -24,6 +26,8 @@ SPEC = {
         ("cookie_refresh_token", "Cookie Auto-Refresh Token", "secret"),
         ("cookie", "Goodreads cookie (fallback)", "secret"),
         ("user_agent", "User-Agent override", "str"),
+        ("request_delay_seconds", "Seconds between Goodreads requests (fewer WAF challenges)", "int"),
+        ("waf_cooldown_minutes", "Pause after a WAF challenge that can't be cleared (minutes)", "int"),
         ("home_url", "Homepage link (dashboard icon)", "str")]),
     "storygraph": ("StoryGraph", [
         ("enabled", "Sync to StoryGraph", "bool"),
@@ -242,14 +246,14 @@ class Api:
 
     def test(self, key):
         try:
-            with self.e.busy():
-                if key == "hardcover":
-                    from .hardcover import HardcoverClient
-                    HardcoverClient(self.cfg["hardcover"]["token"]).user_id
-                    return {"ok": True, "message": "Hardcover token OK"}
-                p = self.e.provider(key)
-                if not p:
-                    raise ApiError(404, "unknown service")
+            if key == "hardcover":
+                from .hardcover import HardcoverClient
+                HardcoverClient(self.cfg["hardcover"]["token"]).user_id
+                return {"ok": True, "message": "Hardcover token OK"}
+            p = self.e.provider(key)
+            if not p:
+                raise ApiError(404, "unknown service")
+            with self.e.busy(key, why="a connection test"):
                 return {"ok": True, "message": p.check_auth()}
         except Busy as e:
             raise ApiError(409, str(e))
@@ -298,7 +302,8 @@ class Api:
                         val = int(val)
                     except (TypeError, ValueError):
                         raise ApiError(400, f"{SPEC[sec][1][[k for k, _, _ in SPEC[sec][1]].index(key)][1]} must be a number")
-                    if val < (0 if key in ("read_collection_id", "min_update_interval_seconds") else 1):
+                    if val < (0 if key in ("read_collection_id", "min_update_interval_seconds", "request_delay_seconds",
+                                           "waf_cooldown_minutes") else 1):
                         raise ApiError(400, f"{key} is out of range")
                 elif kind.startswith("choice:"):
                     if val not in kind[7:].split(","):
@@ -406,11 +411,12 @@ def make_handler(api, cfg):
 
         def _icon(self, key):
             """Custom service icons: put <service>.svg/.png/.webp/.jpg in the data volume's icons/ folder."""
-            if key in {"hardcover", APP_ICON_KEY} | {p.key for p in api.e.providers}:
-                types = {"svg": "image/svg+xml", "png": "image/png", "webp": "image/webp", "jpg": "image/jpeg",
-                         "jpeg": "image/jpeg", "gif": "image/gif"}
-                for ext, ctype in types.items():
-                    f = APP_DIR / "icons" / f"{key}.{ext}"
+            # Only fixed names are ever looked up: the path comes from this table, never from the request text.
+            names = {k: k for k in ["hardcover", APP_ICON_KEY] + [p.key for p in api.e.providers]}
+            safe = names.get(key)
+            if safe:
+                for ext, ctype in ICON_TYPES.items():
+                    f = APP_DIR / "icons" / f"{safe}.{ext}"
                     if f.is_file() and f.stat().st_size < 5_000_000:
                         return self._send(200, f.read_bytes(), ctype)
             if key == APP_ICON_KEY:

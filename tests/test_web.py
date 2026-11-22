@@ -266,6 +266,8 @@ def test_icons_and_hashed_password():
             open(os.path.join(tmp, "icons", "heliograph.png"), "wb").write(b"\x89PNG fake")
             code, body = call(srv, "GET", "/icons/heliograph", creds="pw1"); assert code == 200 and body.startswith(b"\x89PNG")
             assert call(srv, "GET", "/favicon.ico", creds="pw1")[1].startswith(b"\x89PNG") and call(srv, "GET", "/icons/..%2Fc", creds="pw1")[0] == 404
+            open(os.path.join(tmp, "icons", "evil.svg"), "w").write("<svg/>")     # only known service names are served
+            assert call(srv, "GET", "/icons/evil", creds="pw1")[0] == 404 and call(srv, "GET", "/icons/..%2Ficons%2Fgoodreads", creds="pw1")[0] == 404
         finally:
             web.APP_DIR = old; srv.stop()
 

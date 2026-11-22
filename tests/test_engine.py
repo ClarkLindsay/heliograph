@@ -150,6 +150,44 @@ def test_status_only_provider_gets_no_progress():
         assert p.state is eng.state                      # providers can persist what they learn
 
 
+def test_stuck_service_does_not_block_the_others():
+    """A Goodreads WAF challenge can hold Goodreads for minutes; StoryGraph and the cycle must carry on meanwhile."""
+    import threading
+    from heliograph import engine as engine_mod
+    from heliograph.engine import Busy
+    with tempfile.TemporaryDirectory() as tmp:
+        hc, p, eng = make(tmp, "import_all")
+        q = Fake(eng.config, eng.log); q.key, q.label = "storygraph", "StoryGraph"
+        eng.config["storygraph"]["enabled"] = True
+        eng.providers.append(q)
+        hc.lib[1] = Book(1, "A", status="read")
+        held, release = threading.Event(), threading.Event()
+
+        def stuck():                                     # e.g. an import waiting on the cookie refresher
+            with eng.busy("goodreads", timeout=1, why="the import"):
+                p.waiting_on = "waiting for the cookie refresher"
+                held.set(); release.wait(10)
+                p.waiting_on = None
+        t = threading.Thread(target=stuck); t.start(); held.wait(5)
+        old_wait, engine_mod.CYCLE_WAIT = engine_mod.CYCLE_WAIT, 0.2
+        try:
+            with eng.busy("storygraph", timeout=0.5):    # other services are free
+                pass
+            try:
+                with eng.busy("goodreads", timeout=0.1):
+                    raise AssertionError("goodreads should be busy")
+            except Busy as e:
+                assert "Fake is busy with the import (waiting for the cookie refresher)" in str(e), str(e)
+            eng.run_once()                               # cycle skips the busy service, still serves the rest
+            assert q.calls == [("status", "R1", "read")] and p.calls == []
+            assert eng.state.get("baselined:goodreads") is None   # not marked done, so Goodreads catches up later
+        finally:
+            engine_mod.CYCLE_WAIT = old_wait
+            release.set(); t.join()
+        eng.run_once()
+        assert p.calls == [("status", "R1", "read")]
+
+
 def test_parse():
     ub = {"id": 9, "book_id": 4, "edition_id": 7, "status_id": 2, "rating": None,
           "book": {"title": "T", "pages": 300, "contributions": [
@@ -163,6 +201,6 @@ def test_parse():
 if __name__ == "__main__":
     for t in (test_flow, test_failed_update_is_retried_even_outside_the_window, test_per_book_error_does_not_block_others_and_holds_window,
               test_steps_and_throttle, test_import_all_and_want_filter, test_new_service_gets_own_baseline,
-              test_dry_run_changes_nothing, test_link_is_remembered_and_unmatched_is_throttled, test_status_only_provider_gets_no_progress, test_parse):
+              test_dry_run_changes_nothing, test_link_is_remembered_and_unmatched_is_throttled, test_status_only_provider_gets_no_progress, test_stuck_service_does_not_block_the_others, test_parse):
         t()
     print("engine tests passed")

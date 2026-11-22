@@ -15,6 +15,9 @@ licensed), into a standalone Docker container with a web UI. KOReader is not nee
 library (the Hardcover app, a reading app that syncs to it, or the website), Heliograph pushes those changes to your
 other services. All credit for working out how to talk to each service goes to the ShelfSync project.
 
+> 📖 **The [wiki](https://github.com/ClarkLindsay/heliograph/wiki)** has step-by-step guides: installation, your first
+> sync, setting up each service, fixing unmatched books, every setting, and troubleshooting.
+
 ## Contents
 - [What gets synced](#what-gets-synced)
 - [Disclaimers](#disclaimers)
@@ -468,6 +471,7 @@ Compose builds the image locally and gives it the same name, so nothing is pulle
 | `port is already allocated` / `Only one usage of each socket address` | [Change the web UI port](#changing-the-web-ui-port). |
 | Web UI shows *Forbidden* / host refused | Use `localhost`, add your hostname to `HELIOGRAPH__web__allowed_hosts`, or set a web password. |
 | Goodreads: WAF / signed-out errors | Refresh the cookie, or set up the [cookie refresher](#goodreads-cookie-refresher). |
+| Goodreads: frequent WAF challenges | Raise **Seconds between Goodreads requests** in Settings (default 3; try 5–10 for big imports). After a challenge the refresher can't clear, Heliograph leaves Goodreads alone for **Pause after a WAF challenge** minutes (default 15) instead of retrying straight away. Other services keep syncing in the meantime. |
 | StoryGraph: auth errors | Copy fresh `_storygraph_session` and `remember_user_token` cookies. |
 | LibraryThing: Cloudflare errors | Wait and retry, or set `user_agent`. |
 | `Is a directory: '/run/secrets/heliograph_key'` | Docker created a **folder** because `secrets/heliograph.key` didn't exist. Delete the `secrets/heliograph.key` folder, create the key file ([Protecting secrets](#protecting-secrets) step 1), then `docker compose up -d`. |

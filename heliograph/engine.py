@@ -12,6 +12,8 @@ IMPORT_BREAKER = 5               # this many login failures in a row pause a ser
 IMPORT_ROUND_WAIT = 60           # pause before each end-of-import retry round
 IMPORT_ROUNDS = 2
 MAX_CURSOR_HOLD = 7 * 86400      # after this long a failing book no longer pins the incremental window
+UI_WAIT = 15                     # a web UI action waits this long for a busy service before saying so
+CYCLE_WAIT = 120                 # a poll cycle waits this long for a busy service before skipping it this cycle
 
 
 class Busy(Exception):
@@ -23,7 +25,9 @@ class Engine:
         self.config, self.providers, self.state = config, providers, state
         self.log = log or logging.getLogger("heliograph")
         self._hc, self.dry, self.heartbeat = hardcover, dry_run, heartbeat
-        self._lock = threading.Lock()
+        self._cycle_lock = threading.Lock()   # only one poll cycle at a time
+        self._locks = {}                      # one lock per service: a stuck Goodreads doesn't block StoryGraph
+        self._doing = {}                      # service key -> what currently holds its lock (for "busy" messages)
         self._problems = 0
         self.wake = threading.Event()
         self.status = {"running": False, "last_start": 0, "last_end": 0, "examined": 0, "pushed": 0,
@@ -51,18 +55,35 @@ class Engine:
         return next((p for p in self.providers if p.key == key), None)
 
     @contextmanager
-    def busy(self, timeout=60):
-        """Exclusive use of the providers (a sync cycle or a UI action), so their sessions aren't used concurrently."""
-        if not self._lock.acquire(timeout=timeout):
-            raise Busy("A sync cycle is running; try again in a moment")
+    def busy(self, *keys, timeout=UI_WAIT, why="a web UI action"):
+        """Exclusive use of the given services, so one service's session isn't used by two threads at once.
+        Each service has its own lock: a Goodreads WAF challenge (minutes of waiting on the cookie refresher)
+        only holds up Goodreads, never the other services or the rest of the UI."""
+        got = []
         try:
+            for k in sorted(set(keys)):                      # fixed order, so two multi-service holders can't deadlock
+                lock = self._locks.setdefault(k, threading.Lock())
+                if not lock.acquire(timeout=timeout):
+                    raise Busy(self._busy_message(k))
+                got.append(k)
+                self._doing[k] = why
             yield
         finally:
-            self._lock.release()
+            for k in reversed(got):
+                self._doing.pop(k, None)
+                self._locks[k].release()
+
+    def _busy_message(self, key):
+        p = self.provider(key)
+        label = p.label if p else key
+        what = self._doing.get(key) or "another task"
+        waiting = getattr(p, "waiting_on", None)
+        return (f"{label} is busy with {what}" + (f" ({waiting})" if waiting else "")
+                + f". Try again in a moment; other services aren't affected.")
 
     # ---- one poll cycle
     def run_once(self):
-        if not self._lock.acquire(blocking=False):
+        if not self._cycle_lock.acquire(blocking=False):
             return 0
         self.status.update(running=True, last_start=time.time(), examined=0, pushed=0)
         try:
@@ -74,7 +95,7 @@ class Engine:
             raise
         finally:
             self.status.update(running=False, last_end=time.time())
-            self._lock.release()
+            self._cycle_lock.release()
 
     def _cycle(self):
         active = [p for p in self.providers if p.enabled]
@@ -100,8 +121,15 @@ class Engine:
             if not self.dry:
                 self.state.upsert_book(b, time.time())
             for p in active:
-                if p.key not in failed:
-                    n += self._sync(b, p, base and p.key in firsts, failed)
+                if p.key in failed:
+                    continue
+                try:
+                    with self.busy(p.key, timeout=CYCLE_WAIT, why="the sync cycle"):
+                        n += self._sync(b, p, base and p.key in firsts, failed)
+                except Busy:
+                    # e.g. an import is waiting on this service; skip it this cycle (the Hardcover window stays open)
+                    self.log.info("%s: busy with %s - skipping it this cycle", p.label, self._doing.get(p.key) or "another task")
+                    failed.add(p.key)
         self.status.update(examined=len(books), pushed=n)
         self.log.info("Cycle done: %d book(s) examined, %d update(s) pushed%s", len(books), n,
                       "" if n or firsts else " (nothing changed since the last sync; see Books in the web UI, or turn on "
@@ -235,23 +263,24 @@ class Engine:
             self.log.warning("%s: no confident match for '%s' - will retry in 6h", p.label, b.title)
         return m
 
-    # ---- actions used by the web UI (each holds the provider lock)
+    # ---- actions used by the web UI (each holds only the lock of the service it uses)
     def refresh_library(self):
-        with self.busy():
-            books = self.hc().fetch_library()
-            now = time.time()
-            for b in books:
-                self.state.upsert_book(b, now)
-            return len(books)
+        books = self.hc().fetch_library()                   # Hardcover only: no service lock needed
+        now = time.time()
+        for b in books:
+            self.state.upsert_book(b, now)
+        return len(books)
 
     def search_candidates(self, ub_id, key, query=None):
         b, p = self.state.get_book(ub_id), self.provider(key)
         if not b or not p:
             raise KeyError("unknown book or service")
-        q = (query or " ".join([b.title] + b.authors)).strip()
-        with self.busy():
+        typed = " ".join((query or "").split())
+        default = " ".join(" ".join([b.title] + b.authors).split())      # what the picker pre-fills
+        with self.busy(key, why="an edition search"):
             out = []
-            for c in p.search(q)[:15]:
+            found = p.search(typed) if typed and typed != default else p.search_book(b.title, b.authors)
+            for c in found[:15]:
                 out.append({"id": c["id"], "title": c.get("title") or "", "authors": c.get("authors") or [],
                             "pages": c.get("pages"), "cover": c.get("cover"), "url": p.book_url(c["id"]), "raw": c})
             return out
@@ -260,7 +289,7 @@ class Engine:
         b, p = self.state.get_book(ub_id), self.provider(key)
         if not b or not p:
             raise KeyError("unknown book or service")
-        with self.busy():
+        with self.busy(key, why="linking an edition"):
             if ref is not None:
                 rid = p.parse_ref(ref)
                 if not rid:
@@ -286,7 +315,7 @@ class Engine:
         p = self.provider(key)
         if not p:
             raise KeyError("unknown service")
-        with self.busy():
+        with self.busy(key, why="a manual push"):
             if self.state.link(ub_id, key)["skip"]:
                 raise ValueError("This service is set to skip this book")
             b = self.hc().fetch_one(ub_id)
@@ -433,7 +462,7 @@ class Engine:
     def _attempt(self, b, p, dry, skip_existing):
         """One try at syncing book b to provider p. Returns {pushed, skipped, error, auth, nomatch}."""
         out = {"pushed": 0, "skipped": False, "error": None, "auth": False, "nomatch": False}
-        with self.busy(timeout=1800):
+        with self.busy(p.key, timeout=1800, why="the import"):
             st = dict(self.state.link(b.ub_id, p.key), status=None, pages=None, rating=None, pushed_at=0, link_failed_at=0)
             if skip_existing:
                 try:
@@ -544,8 +573,7 @@ class Engine:
             publish()
 
         try:
-            with self.busy(timeout=600):
-                books = self.hc().fetch_library()
+            books = self.hc().fetch_library()
             books = [b for b in books if b.status in statuses]
             if only:
                 ids = {u for u, _ in only}
@@ -558,8 +586,7 @@ class Engine:
             for b in books:
                 if job["cancel"]:
                     break
-                with self.busy(timeout=1800):
-                    self.state.upsert_book(b, time.time())      # so flagged books always show up in the Books tab
+                self.state.upsert_book(b, time.time())          # so flagged books always show up in the Books tab
                 for p in provs:
                     if only and (b.ub_id, p.key) not in only:
                         continue
@@ -597,7 +624,7 @@ class Engine:
                     if not todo or job["cancel"]:
                         continue
                     try:
-                        with self.busy(timeout=600):
+                        with self.busy(p.key, timeout=600, why="the import"):
                             p.check_auth()
                     except Exception as e:
                         self.log.warning("%s: still not ready (%s) - leaving %d item(s) for the next round", p.label, e, len(todo))

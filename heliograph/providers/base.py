@@ -43,6 +43,7 @@ class Provider:
     SUPPORTED = ("want", "reading", "read")
     tracks_progress = True      # False for services that only store status/rating
     state = None                # set by the engine: a tiny kv store for providers that need to remember things
+    waiting_on = None           # set while blocked on something slow (e.g. the Goodreads cookie refresher), for UI messages
 
     def __init__(self, config, log):
         self.config, self.log = config, log
@@ -97,6 +98,11 @@ class Provider:
         """Hook after a candidate is chosen (e.g. StoryGraph edition resolution). -> Match | None"""
         return Match(cand["id"], cand.get("pages"))
 
+    def search_book(self, title, authors):
+        """Candidates for a known book. Services whose search handles "title author" well use the default;
+        override it where a smarter query finds more (see Pagebound)."""
+        return self.search(" ".join([title] + list(authors)))
+
     def find(self, book, by_isbn=True, by_title=True):
         """ISBN first, then scored title+author search, like the plugin's autolink order."""
         if by_isbn:
@@ -105,7 +111,7 @@ class Provider:
                 if m:
                     return m
         if by_title and book.title.strip():
-            cands = self.search(" ".join([book.title] + book.authors))
+            cands = self.search_book(book.title, book.authors)
             best = matching.best_match(book.title, book.authors, cands)
             if best:
                 return self.finalize(best)
