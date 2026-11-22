@@ -1,5 +1,5 @@
 """Fable via its Firebase login + api.fable.co, ported from ShelfSync's fable/api.lua."""
-import time
+import re, time
 import requests
 from . import firebase
 from urllib.parse import quote
@@ -93,6 +93,18 @@ class Fable(Provider):
 
     def search(self, query):
         return [self._cand(b) for b in self._books(query)] if query.strip() else []
+
+    def parse_ref(self, text):
+        """A Fable book id (a UUID), or a fable.co/book/... link (they end in the ISBN, which is looked up)."""
+        t = (text or "").strip()
+        m = re.search(r"\b([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\b", t, re.I)
+        if m:
+            return m.group(1).lower()
+        m = re.search(r"fable\.co/book/[^?#\s]*?(\d{13}|\d{9}[\dXx])(?:[/?#]|$)", t)
+        if m:
+            hit = next((b for b in self._books(m.group(1)) if b.get("isbn") == m.group(1)), None)
+            return str(hit["id"]) if hit else None
+        return None
 
     def lookup_isbn(self, isbn, want_audio=False):
         cands = [self._cand(b) for b in self._books(isbn)]

@@ -610,6 +610,15 @@ def test_fable_flow():
             p.set_rating("B2", 5, b)
         assert [(m, u) for m, u, _ in calls if m != "GET"] == [("PATCH", "/api/books/B2/reviews/R9")]
         assert calls[-1][2]["rating"] == 5.0 and calls[-1][2]["review"] == "Good" and calls[-1][2]["labels"] == ["x"]
+        uid = "78D23960-2135-4233-b11c-a7811bb77ade"                  # linking by hand: an id, or a book link
+        assert p.parse_ref(uid) == uid.lower() and p.parse_ref("https://fable.co/x/" + uid) == uid.lower()
+        assert p.parse_ref("12345") is None and p.parse_ref("https://fable.co/book/white-sand") is None
+        def by_isbn(method, url, **kw):
+            if "/api/books/search/" in url and "9781524110062" in url:
+                return Resp(200, {"response": {"books": [{"id": "B9", "isbn": "9781524110062"}]}})
+            return fake(method, url, **kw)
+        with mock.patch("requests.request", side_effect=by_isbn):
+            assert p.parse_ref("https://fable.co/book/white-sand-volume-3-by-brandon-sanderson-9781524110062") == "B9"
         with mock.patch("requests.request", side_effect=reviewed):
             assert p.read_state("B2")["rating"] == 4.0                 # Fable's rating is a string
             assert p.read_state("B1")["rating"] is None                # not reviewed
