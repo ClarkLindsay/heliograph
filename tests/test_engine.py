@@ -277,6 +277,25 @@ def test_books_removed_from_hardcover():
         assert removed == [] and eng.state.get_book(4) is not None
 
 
+def test_profile_links_are_refreshed_weekly():
+    with tempfile.TemporaryDirectory() as tmp:
+        hc, p, eng = make(tmp)
+        p.HOME = "https://www.goodreads.com/"; asked = []
+        p.profile_url = lambda: asked.append(1) or "https://www.goodreads.com/user/show/9"
+        eng.run_once()
+        assert asked == [1] and p.home_url() == "https://www.goodreads.com/user/show/9"
+        eng.run_once(); assert asked == [1]                          # not again for a week
+        p.profile_url = lambda: "https://elsewhere.example/me"
+        eng.refresh_profile_links(force=True)
+        assert p.home_url() == "https://www.goodreads.com/user/show/9"        # a link off the service's site is ignored
+        eng.config["goodreads"]["home_url"] = "https://www.goodreads.com/mine"
+        p.profile_url = lambda: asked.append(2)
+        eng.refresh_profile_links(force=True); assert 2 not in asked and p.home_url().endswith("/mine")   # yours wins
+        eng.config["goodreads"]["home_url"] = ""
+        p.profile_url = lambda: (_ for _ in ()).throw(RuntimeError("down"))
+        eng.refresh_profile_links(force=True); assert p.home_url().endswith("/user/show/9")              # failure keeps it
+
+
 def test_parse():
     ub = {"id": 9, "book_id": 4, "edition_id": 7, "status_id": 2, "rating": None,
           "book": {"title": "T", "pages": 300, "contributions": [
@@ -291,6 +310,6 @@ if __name__ == "__main__":
     for t in (test_flow, test_failed_update_is_retried_even_outside_the_window, test_per_book_error_does_not_block_others_and_holds_window,
               test_steps_and_throttle, test_import_all_and_want_filter, test_new_service_gets_own_baseline,
               test_dry_run_changes_nothing, test_link_is_remembered_and_unmatched_is_throttled, test_status_only_provider_gets_no_progress, test_stuck_service_does_not_block_the_others,
-              test_editions_check_and_fix, test_books_removed_from_hardcover, test_parse):
+              test_editions_check_and_fix, test_books_removed_from_hardcover, test_profile_links_are_refreshed_weekly, test_parse):
         t()
     print("engine tests passed")

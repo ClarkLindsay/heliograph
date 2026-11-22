@@ -135,6 +135,38 @@ def test_goodreads_refresher_accounts():
         assert "several accounts" in gr.refresher_hint(Resp(400, "specify an account")) and "unknown refresher account" in gr.refresher_hint(Resp(404, "unknown account 'x'"))
 
 
+def test_profile_links():
+    """Dashboard icons open your profile: worked out from each service's session, only ever into its own site."""
+    with tempfile.TemporaryDirectory() as tmp:
+        c = cfg(tmp)
+        c["goodreads"].update(enabled=True, cookie="a=1"); c["storygraph"].update(enabled=True, session_cookie="S")
+        c["fable"].update(id_token="I", refresh_token="R", token_expires_at=time.time() + 3000, user_id="U")
+        c["pagebound"].update(id_token="I", refresh_token="R", api_token="A", token_expires_at=time.time() + 3000, user_id="234")
+        g = gr.Goodreads(c, LOG)
+        with mock.patch("requests.request", side_effect=[Resp(302, "", {"location": "/review/list/157306489-sam"}, url="x"),
+                                                         Resp(200, "csrf-token", url="x")]):
+            assert g.profile_url() == "https://www.goodreads.com/user/show/157306489"
+        html = '<a href="/profile/edit/sam">Edit</a><a href="/profile/sam">Profile</a>'
+        with mock.patch("requests.request", return_value=Resp(200, html, url=sg.BASE + "/")):
+            assert sg.StoryGraph(c, LOG).profile_url() == "https://app.thestorygraph.com/profile/sam"
+        with mock.patch("requests.request", return_value=Resp(200, {"id": "U", "url": "https://fable.co/fabler/sam-123"})):
+            assert fb.Fable(c, LOG).profile_url() == "https://fable.co/fabler/sam-123"
+        with mock.patch("requests.request", return_value=Resp(200, {"id": 234, "username": "sam b"})):
+            assert pb.Pagebound(c, LOG).profile_url() == "https://pagebound.co/users/sam%20b"
+        from heliograph.providers import librarything as lt
+        c["librarything"].update(username="", session_cookie="cookie_userid=samlt; cookie_usernum=1")
+        assert lt.LibraryThing(c, LOG).profile_url() == "https://www.librarything.com/profile/samlt"
+        # only links into the service's own site; your own link always wins
+        assert g.is_own_url("https://www.goodreads.com/user/show/1") and not g.is_own_url("https://evil.example/goodreads.com")
+        assert not g.is_own_url("http://www.goodreads.com/x") and not g.is_own_url("https://notgoodreads.com/x")
+        st = {}
+        g.state = mock.Mock(get=lambda k, d=None: st.get(k, d))
+        assert g.home_url() == "https://www.goodreads.com/"
+        st["profile_url:goodreads"] = "https://www.goodreads.com/user/show/1"; assert g.home_url().endswith("/user/show/1")
+        st["profile_url:goodreads"] = "https://evil.example/"; assert g.home_url() == "https://www.goodreads.com/"
+        c["goodreads"]["home_url"] = "https://www.goodreads.com/review/list/1"; assert g.home_url().endswith("/review/list/1")
+
+
 def test_goodreads_cools_down_after_uncleared_waf():
     with tempfile.TemporaryDirectory() as tmp:
         c = cfg(tmp); c["goodreads"].update(enabled=True, cookie="old=1", cookie_refresh_url="http://r:5080")
@@ -655,7 +687,7 @@ def test_env_overrides():
 
 
 ALL = [test_matching, test_page_mapping, test_goodreads_helpers, test_goodreads_refresher_on_waf,
-       test_goodreads_refresher_accounts, test_goodreads_cools_down_after_uncleared_waf, test_goodreads_pacing_and_reuse,
+       test_goodreads_refresher_accounts, test_profile_links, test_goodreads_cools_down_after_uncleared_waf, test_goodreads_pacing_and_reuse,
        test_goodreads_bootstraps_empty_cookie_from_refresher, test_goodreads_auth_failure_without_refresher,
        test_goodreads_writes_and_headers, test_goodreads_date_finished_flow, test_goodreads_finished_sessions_logic,
        test_storygraph_search_and_status_parsing, test_storygraph_edition_redirect_and_audio_refusal,

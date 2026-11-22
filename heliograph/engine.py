@@ -13,7 +13,8 @@ IMPORT_BREAKER = 5               # this many login failures in a row pause a ser
 IMPORT_ROUND_WAIT = 60           # pause before each end-of-import retry round
 IMPORT_ROUNDS = 2
 MAX_CURSOR_HOLD = 7 * 86400      # after this long a failing book no longer pins the incremental window
-REMOVAL_CHECK_EVERY = 30 * 60   # how often the whole library is compared with ours to spot removed books
+PROFILE_EVERY = 7 * 86400        # how often each service is asked where your profile is (dashboard icon link)
+REMOVAL_CHECK_EVERY = 30 * 60  # how often the whole library is compared with ours to spot removed books
 REMOVAL_BREAKER = 5              # more books than this gone at once: hold them for you to confirm (glitch / wrong account?)
 UI_WAIT = 15                    # a web UI action waits this long for a busy service before saying so
 CYCLE_WAIT = 120                 # a poll cycle waits this long for a busy service before skipping it this cycle
@@ -97,6 +98,7 @@ class Engine:
                 self.check_removed()
             except Exception as e:
                 self.log.error("Checking for books removed from Hardcover failed: %s", e)
+            self.refresh_profile_links()
             return n
         except Exception as e:
             self.status["result"] = f"error: {e}"
@@ -411,6 +413,28 @@ class Engine:
         if not items:
             raise ValueError("Nothing to retry")
         return self.start_import(dry=self.job.get("dry", False), skip_existing=self.job.get("skip_existing", False), only=items)
+
+    # ---- dashboard icon links: your own profile on each service
+    def refresh_profile_links(self, keys=None, force=False):
+        """Find your profile page on each enabled service (about once a week, one request each) so its dashboard
+        icon opens your profile. A link you set yourself in Settings always wins; failures are just retried later."""
+        for p in self.providers:
+            if not p.enabled or (keys and p.key not in keys) or (p.cfg.get("home_url") or "").strip():
+                continue
+            if not force and time.time() - float(self.state.get(f"profile_checked:{p.key}") or 0) < PROFILE_EVERY:
+                continue
+            try:
+                with self.busy(p.key, timeout=5, why="looking up your profile link"):
+                    url = p.profile_url()
+            except Busy:
+                continue                                         # busy right now: next cycle
+            except Exception as e:
+                self.log.debug("%s: couldn't look up your profile link: %s", p.label, e)
+                url = None
+            self.state.set(f"profile_checked:{p.key}", str(time.time()))
+            if url and p.is_own_url(url) and url != self.state.get(f"profile_url:{p.key}"):
+                self.state.set(f"profile_url:{p.key}", url)
+                self.log.info("%s: the dashboard icon now opens your profile (%s)", p.label, url)
 
     # ---- books removed from your Hardcover library
     def check_removed(self, force=False):

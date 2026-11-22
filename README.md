@@ -280,7 +280,9 @@ Open **http://localhost:8080** (or [your port](#changing-the-web-ui-port)).
   to keep its value, and **Clear** removes it. Settings set through `HELIOGRAPH__...` environment variables are shown
   locked. Changes apply on the next cycle.
 - **Icons:** Heliograph ships with its own icon and plain monogram icons for each service. Clicking a service icon
-  opens that service's homepage (override with its `home_url` setting).
+  opens **your profile** on that service. Heliograph looks the profile up from the session it already has, about once a
+  week, and also right after **Test**. Until it's known, the icon opens the service's homepage. To send it somewhere
+  else, set **Dashboard icon link** in that service's settings; your own link always wins.
   - **Service logos (optional, local only):** put files named like `goodreads.png` (`.svg`, `.png`, `.webp` or `.jpg`)
     in the `icons/` folder next to `docker-compose.yml`. The keys are `hardcover`, `goodreads`, `storygraph`, `fable`,
     `pagebound` and `librarything`.

@@ -334,6 +334,13 @@ class LibraryThing(Provider):
         self._add_form(TEST_WORK_ID)
         return "LibraryThing session OK"
 
+    def profile_url(self):
+        name = (self.cfg.get("username") or "").strip()
+        if not name:
+            m = re.search(r"cookie_userid=([^;\s]+)", self.cfg.get("session_cookie") or "")
+            name = m.group(1) if m else ""
+        return f"{BASE}/profile/{quote_plus(name)}" if name else None
+
     # ---- the user's copy
     def _search_catalog(self, work_id, term):
         term = (term or "").strip()

@@ -70,6 +70,11 @@ class Fable(Provider):
         return self.cfg["user_id"]
 
     # ---- Provider API
+    def profile_url(self):
+        code, d = self._req("/api/settings/profile/")
+        url = (d or {}).get("url") if code == 200 else None             # e.g. https://fable.co/fabler/<name>-<id>
+        return url if isinstance(url, str) else None
+
     def check_auth(self):
         self._uid()
         return "Fable login OK"

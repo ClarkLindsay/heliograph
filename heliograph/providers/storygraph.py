@@ -233,6 +233,14 @@ class StoryGraph(Provider):
         res = self.search(isbn)
         return self.finalize(dict(res[0], want_isbns=[isbn], want_audio=want_audio)) if res else None
 
+    def profile_url(self):
+        r = self._req("GET", "/")
+        for a in BeautifulSoup(r.text, "html.parser").select("a[href^='/profile/']"):     # the menu's own link
+            m = re.fullmatch(r"/profile/([^/?#]+)", a.get("href") or "")
+            if m and m.group(1) != "edit":
+                return f"{BASE}/profile/{m.group(1)}"
+        return None
+
     def check_edition(self, remote_id):
         info = self._page(remote_id)
         return info["language"], info["format"]

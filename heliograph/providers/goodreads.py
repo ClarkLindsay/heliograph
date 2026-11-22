@@ -514,6 +514,11 @@ class Goodreads(Provider):
         return m.group(1) if m else None
 
     # ---- lookup
+    def profile_url(self):
+        r = self._req("GET", BASE + "/review/list")               # redirects to /review/list/<your user id>
+        m = re.search(r"/review/list/(\d+)", getattr(r, "final_url", "") or "")
+        return f"{BASE}/user/show/{m.group(1)}" if m else None
+
     def refresher_status(self):
         """One line about the cookie refresher (for the Test button), or None if none is set up."""
         base, tok, source = self.refresher_endpoint()

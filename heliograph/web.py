@@ -34,7 +34,7 @@ STATUS_ORDER = {"reading": 0, "paused": 1, "want": 2, "read": 3, "dnf": 4}
 
 # section -> (label, [(key, label, kind)])   kind: str | secret | bool | int | choice:a,b
 SPEC = {
-    "hardcover": ("Hardcover", [("token", "API token", "secret"), ("home_url", "Homepage link (dashboard icon)", "str")]),
+    "hardcover": ("Hardcover", [("token", "API token", "secret"), ("home_url", "Dashboard icon link (blank = your profile there)", "str")]),
     "goodreads": ("Goodreads", [
         ("enabled", "Sync to Goodreads", "bool"),
         ("cookie_refresh_url", "Cookie Auto-Refresh URL", "str"),
@@ -44,23 +44,23 @@ SPEC = {
         ("user_agent", "User-Agent override", "str"),
         ("request_delay_seconds", "Seconds between Goodreads requests (fewer WAF challenges)", "int"),
         ("waf_cooldown_minutes", "Pause after a WAF challenge that can't be cleared (minutes)", "int"),
-        ("home_url", "Homepage link (dashboard icon)", "str")]),
+        ("home_url", "Dashboard icon link (blank = your profile there)", "str")]),
     "storygraph": ("StoryGraph", [
         ("enabled", "Sync to StoryGraph", "bool"),
         ("session_cookie", "_storygraph_session", "secret"),
         ("remember_user_token", "remember_user_token", "secret"),
-        ("home_url", "Homepage link (dashboard icon)", "str")]),
+        ("home_url", "Dashboard icon link (blank = your profile there)", "str")]),
     "fable": ("Fable", [
         ("enabled", "Sync to Fable", "bool"), ("email", "Email", "str"), ("password", "Password", "secret"),
-        ("home_url", "Homepage link (dashboard icon)", "str")]),
+        ("home_url", "Dashboard icon link (blank = your profile there)", "str")]),
     "pagebound": ("Pagebound", [
         ("enabled", "Sync to Pagebound", "bool"), ("email", "Email", "str"), ("password", "Password", "secret"),
-        ("home_url", "Homepage link (dashboard icon)", "str")]),
+        ("home_url", "Dashboard icon link (blank = your profile there)", "str")]),
     "librarything": ("LibraryThing", [
         ("enabled", "Sync to LibraryThing", "bool"), ("username", "Username", "str"),
         ("password", "Password", "secret"), ("session_cookie", "Session cookies (alternative)", "secret"),
         ("read_collection_id", "Read collection id (0 = Your library)", "int"), ("user_agent", "User-Agent override", "str"),
-        ("home_url", "Homepage link (dashboard icon)", "str")]),
+        ("home_url", "Dashboard icon link (blank = your profile there)", "str")]),
     "common": ("Sync behaviour", [
         ("poll_interval_minutes", "Poll Hardcover every (minutes)", "int"),
         ("min_update_interval_seconds", "Min seconds between progress updates", "int"),
@@ -276,7 +276,9 @@ class Api:
             if not p:
                 raise ApiError(404, "unknown service")
             with self.e.busy(key, why="a connection test"):
-                return {"ok": True, "message": p.check_auth()}
+                msg = p.check_auth()
+            self.e.refresh_profile_links(keys=[key], force=True)   # signed in: the icon can link to your profile now
+            return {"ok": True, "message": msg}
         except Busy as e:
             raise ApiError(409, str(e))
         except ApiError:

@@ -1,4 +1,4 @@
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 from .. import matching
 
 
@@ -98,10 +98,24 @@ class Provider:
     HOME = ""     # the service's homepage (dashboard icon link); override per service with the home_url setting
 
     def home_url(self):
+        """Where the dashboard icon links: your own link (Settings) > your profile on the service > its homepage."""
         custom = (self.cfg.get("home_url") or "").strip()
         if custom.startswith(("https://", "http://")):
             return custom
-        return self.HOME or None
+        found = self.state.get(f"profile_url:{self.key}") if self.state else None
+        return found if self.is_own_url(found) else (self.HOME or None)
+
+    def profile_url(self):
+        """Your own profile page on this service, worked out from the session Heliograph already has (None if
+        unknown). Fetched about once a week by the engine and kept in the state store."""
+        return None
+
+    def is_own_url(self, url):
+        """Only links into this service's own site are used for its icon."""
+        home = urlparse(self.HOME or "").hostname or ""
+        domain = ".".join(home.split(".")[-2:])
+        host = urlparse(url or "").hostname or ""
+        return bool(domain) and (url or "").startswith("https://") and (host == domain or host.endswith("." + domain))
 
     def book_url(self, remote_id):
         """Link to the book's page on the service, for the web UI (None if unknown)."""

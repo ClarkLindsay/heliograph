@@ -1,6 +1,7 @@
 """Pagebound via Firebase login + token exchange, ported from ShelfSync's pagebound/api.lua."""
 import re, time
 from datetime import datetime
+from urllib.parse import quote
 import requests
 from . import firebase
 from .base import Provider, AuthError, ProviderError, Match, mapped_page, clean_cover
@@ -109,6 +110,15 @@ class Pagebound(Provider):
     def check_auth(self):
         self._ensure(force=True)
         return "Pagebound login OK"
+
+    def profile_url(self):
+        self._ensure()
+        uid = self.cfg.get("user_id")
+        if not uid:
+            return None
+        code, d = self._req(f"/api/v1/users/{uid}")
+        name = ((d or {}).get("user", d) or {}).get("username") if code == 200 and isinstance(d, dict) else None
+        return f"https://pagebound.co/users/{quote(name, safe='')}" if name else None
 
     # ---- search (Typesense: title/author only, no ISBN lookup - same as the plugin)
     def search(self, query):
