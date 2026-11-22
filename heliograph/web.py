@@ -103,8 +103,15 @@ def link_view(link, provider):
     else:
         state = "pending"
     rid = link["remote_id"]
+    suggest = None
+    if state == "nomatch" and link.get("suggest"):
+        try:
+            suggest = json.loads(link["suggest"])
+        except (TypeError, ValueError):
+            suggest = None
     return {"state": state, "remote_id": rid, "url": provider.book_url(rid) if rid else None,
-            "manual": bool(link["manual"]), "error": link["error"], "pushed_at": link["pushed_at"] or None}
+            "manual": bool(link["manual"]), "error": link["error"], "pushed_at": link["pushed_at"] or None,
+            "suggest": suggest}
 
 
 def book_view(b, links, providers):
@@ -592,6 +599,7 @@ def make_handler(hub, cfg, server_log):
                 if path == "/api/hardcover/cleanup": return api._guard(api.e.hardcover_cleanup)
                 if path == "/api/removals": return api.e.pending_removals()
                 if path == "/api/hardcover/dates": return dict(api.e.dates_job)
+                if path == "/api/matching": return api.e.matching_status()
                 m = re.fullmatch(r"/api/book/(\d+)", path)
                 if m: return api.book(int(m.group(1)))
                 m = re.fullmatch(r"/api/book/(\d+)/cover", path)
@@ -606,6 +614,7 @@ def make_handler(hub, cfg, server_log):
                 if path == "/api/editions": return dict(api._guard(api.e.start_edition_check, bool(body.get("fix"))))
                 if path == "/api/removals": return api._guard(api.e.resolve_removals, bool(body.get("remove")))
                 if path == "/api/hardcover/dates/scan": return dict(api._guard(api.e.start_dates_scan))
+                if path == "/api/matching/reset": return api.e.reset_matching()
                 if path == "/api/hardcover/dates/apply":
                     keys = body.get("keys")
                     if not isinstance(keys, list) or not all(isinstance(k, str) for k in keys):

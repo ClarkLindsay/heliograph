@@ -275,8 +275,10 @@ class LibraryThing(Provider):
         self._remember(cand["id"], title=cand["title"], author=(cand.get("authors") or [None])[0])
         return Match(cand["id"])
 
-    def find(self, book, by_isbn=True, by_title=True):
-        from .. import matching
+    def find(self, book, by_isbn=True, by_title=True, matcher=None):
+        from .. import smartmatch
+        matcher = matcher or getattr(self, "matcher", None) or smartmatch.Matcher()
+        self.last_suggestion = None
         if by_isbn:
             for isbn in dict.fromkeys(filter(None, (book.isbn13, book.isbn10))):
                 m = self.lookup_isbn(isbn)
@@ -287,8 +289,18 @@ class LibraryThing(Provider):
             books = self.search_works((book.title + " " + first).strip())
             if not books and first:                 # the author can be spelled differently there
                 books = self.search_works(book.title)
-            best = matching.best_match(book.title, book.authors, books)
-            return self.finalize(best) if best else None
+            hints = [i for i in (book.isbn13, book.isbn10) if i]
+            evals = matcher.evaluate(book.title, book.authors, books, hints, getattr(book, "total_pages", None))
+            best = next((r for r in evals if r["ok"]), None)
+            if best:
+                return self.finalize(best["cand"])
+            near = next((r for r in evals if not r["blocked"] and r["confidence"] >= smartmatch.SUGGEST), None)
+            if near:
+                c = near["cand"]
+                self.last_suggestion = {"candidate": c, "id": str(c.get("id")), "title": c.get("title") or "",
+                                        "authors": c.get("authors") or [], "confidence": round(near["confidence"], 2),
+                                        "reasons": near["reasons"]}
+            return None
         return None
 
     # ---- collections

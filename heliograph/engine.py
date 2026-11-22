@@ -2,7 +2,7 @@ import csv, io, json, logging, threading, time
 from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
-from . import dates
+from . import dates, smartmatch
 from .config import APP_DIR
 from .hardcover import HardcoverClient
 from .providers.base import AuthError, is_audio
@@ -34,6 +34,8 @@ class Engine:
         self._locks = {}                      # one lock per service: a stuck Goodreads doesn't block StoryGraph
         self._doing = {}                      # service key -> what currently holds its lock (for "busy" messages)
         self._problems = 0
+        self._use_matcher(smartmatch.Matcher(self._learned_weights()))   # learns from the editions you pick by hand
+        self._searches = {}                   # (ub_id, service) -> last "Find edition" results, to learn from your pick
         self.wake = threading.Event()
         self.status = {"running": False, "last_start": 0, "last_end": 0, "examined": 0, "pushed": 0,
                        "result": "not run yet", "next_run": 0}
@@ -260,6 +262,43 @@ class Engine:
             self._note(b, p, e, now, dry)
         return 0
 
+    # ---- smart matching: what it has learned from you
+    def _learned_weights(self):
+        try:
+            w = json.loads(self.state.get("match_weights") or "{}")
+            return w if isinstance(w, dict) else {}
+        except (TypeError, ValueError):
+            return {}
+
+    def _use_matcher(self, matcher):
+        self.matcher = matcher
+        for p in self.providers:
+            p.matcher = matcher                 # find() uses it
+
+    def matching_status(self):
+        w = self.matcher.weights
+        changed = {k: round(w[k] - smartmatch.DEFAULT_WEIGHTS[k], 2) for k in w if abs(w[k] - smartmatch.DEFAULT_WEIGHTS[k]) > 0.005}
+        return {"learned_from": int(self.state.get("match_learned") or 0), "adjusted": changed}
+
+    def reset_matching(self):
+        self._use_matcher(smartmatch.Matcher())
+        self.state.set("match_weights", "{}"); self.state.set("match_learned", "0")
+        self.log.info("Smart matching: reset to its defaults")
+        return self.matching_status()
+
+    def _learn_from_pick(self, b, key, cand):
+        """You linked a result from "Find edition…": let the matcher learn which kind of candidate you prefer."""
+        found = self._searches.pop((b.ub_id, key), None)
+        if not found or not cand:
+            return
+        ids = [str(c.get("id")) for c in found]
+        if str(cand.get("id")) not in ids:
+            return
+        hints = [i for i in (b.isbn13, b.isbn10) if i]
+        if self.matcher.learn(b.title, b.authors, found, ids.index(str(cand.get("id"))), hints, b.total_pages):
+            self.state.set("match_weights", json.dumps(self.matcher.weights))
+            self.state.set("match_learned", str(int(self.state.get("match_learned") or 0) + 1))
+
     def _link(self, p, b, st, now, dry=None, outcome=None, flag=False):
         """flag=True (imports/previews) records an unmatched book even in dry-run, so it shows up flagged in the Books tab."""
         dry = self.dry if dry is None else dry
@@ -272,13 +311,17 @@ class Engine:
                           f" ({m.note})" if m.note else "")
             self._move_entry(p, b, m, dry)
             if not dry:
-                self.state.save_link(b.ub_id, p.key, remote_id=m.id, remote_pages=m.pages)
+                self.state.save_link(b.ub_id, p.key, remote_id=m.id, remote_pages=m.pages, suggest=None)
         else:
+            near = getattr(p, "last_suggestion", None)
             if flag or not dry:
-                self.state.save_link(b.ub_id, p.key, link_failed_at=now, error="no confident match found")
+                self.state.save_link(b.ub_id, p.key, link_failed_at=now, error="no confident match found",
+                                     suggest=json.dumps(near) if near else None)
             if outcome is not None:
                 outcome["nomatch"] = True
-            self.log.warning("%s: no confident match for '%s' - will retry in 6h", p.label, b.title)
+                outcome["suggestion"] = near
+            self.log.warning("%s: no confident match for '%s'%s - will retry in 6h", p.label, b.title,
+                             f" (suggested: '{near['title']}', {round(near['confidence'] * 100)}%)" if near else "")
         return m
 
     def _move_entry(self, p, b, m, dry):
@@ -313,10 +356,15 @@ class Engine:
         default = " ".join(" ".join([b.title] + b.authors).split())      # what the picker pre-fills
         with self.busy(key, why="an edition search"):
             out = []
-            found = p.search(typed) if typed and typed != default else p.search_book(b.title, b.authors)
-            for c in found[:15]:
+            found = (p.search(typed) if typed and typed != default else p.search_book(b.title, b.authors))[:15]
+            self._searches[(ub_id, key)] = found
+            hints = [i for i in (b.isbn13, b.isbn10) if i]
+            for r in self.matcher.evaluate(b.title, b.authors, found, hints, b.total_pages):
+                c = r["cand"]
                 out.append({"id": c["id"], "title": c.get("title") or "", "authors": c.get("authors") or [],
-                            "pages": c.get("pages"), "cover": c.get("cover"), "url": p.book_url(c["id"]), "raw": c})
+                            "pages": c.get("pages"), "cover": c.get("cover"), "url": p.book_url(c["id"]), "raw": c,
+                            "match": {"ok": r["ok"], "blocked": r["blocked"], "confidence": round(r["confidence"], 2),
+                                      "reasons": r["reasons"]}})
             return out
 
     def link_candidate(self, ub_id, key, cand=None, ref=None):
@@ -335,8 +383,10 @@ class Engine:
                                  f"other-language editions; see Settings)")
             self._move_entry(p, b, m, dry=False)
             self.state.save_link(ub_id, key, remote_id=m.id, remote_pages=m.pages, manual=1, skip=0,
-                                 link_failed_at=0, error=None, error_at=0)
+                                 link_failed_at=0, error=None, error_at=0, suggest=None)
             self.log.info("%s: '%s' manually linked -> %s", p.label, b.title, m.id)
+            if cand is not None and ref is None:
+                self._learn_from_pick(b, key, cand)
             return m
 
     def unlink(self, ub_id, key):
@@ -882,7 +932,7 @@ class Engine:
                 failed.pop(k, None)
                 if out["nomatch"]:
                     kind, detail = "no match", "no confident match found - link it manually in the Books tab"
-                    unmatched[k] = base
+                    unmatched[k] = dict(base, suggestion=out.get("suggestion"))
                 else:
                     unmatched.pop(k, None)
                     if out["skipped"]:

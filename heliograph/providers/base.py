@@ -1,5 +1,5 @@
 from urllib.parse import urljoin, urlparse
-from .. import matching
+from .. import smartmatch
 
 
 def clean_cover(url, base=None):
@@ -153,20 +153,43 @@ class Provider:
         override it where a smarter query finds more (see Pagebound)."""
         return self.search(" ".join([title] + list(authors)))
 
-    def find(self, book, by_isbn=True, by_title=True):
-        """ISBN first, then scored title+author search, like the plugin's autolink order."""
+    SEARCHES = 3          # searches find() may run per book when the first finds nothing usable (fewer where costly)
+
+    def find(self, book, by_isbn=True, by_title=True, matcher=None):
+        """ISBN first, then title+author search scored by the smart matcher (see smartmatch). If nothing passes,
+        more searches are tried (main title + surname, title alone); the best near miss is left in
+        self.last_suggestion for you to accept with one click."""
+        matcher = matcher or getattr(self, "matcher", None) or smartmatch.Matcher()
+        self.last_suggestion = None
         audio = bool(getattr(book, "audio", False))
         if by_isbn:
             for isbn in dict.fromkeys(filter(None, (book.isbn13, book.isbn10))):
                 m = self.lookup_isbn(isbn, want_audio=audio)
                 if m:
                     return m
-        if by_title and book.title.strip():
-            cands = self.search_book(book.title, book.authors)
-            hints = [i for i in (book.isbn13, book.isbn10) if i]
+        if not (by_title and book.title.strip()):
+            return None
+        hints = [i for i in (book.isbn13, book.isbn10) if i]
+        pages = getattr(book, "total_pages", None)
+        near, seen = None, set()
+        for n, query in enumerate(smartmatch.query_variants(book.title, book.authors)[:max(1, self.SEARCHES)]):
+            cands = self.search_book(book.title, book.authors) if n == 0 else self.search(query)
+            cands = [c for c in cands if str(c.get("id")) not in seen]
+            seen.update(str(c.get("id")) for c in cands)
+            evals = matcher.evaluate(book.title, book.authors, cands, hints, pages)
             # best first; finalize() may refuse one (audiobook / other language with no usable edition), then try the next
-            for cand in matching.ranked(book.title, book.authors, cands)[:5]:
-                m = self.finalize(dict(cand, want_isbns=hints, want_audio=audio))
+            for r in [r for r in evals if r["ok"]][:5]:
+                m = self.finalize(dict(r["cand"], want_isbns=hints, want_audio=audio))
                 if m:
+                    note = "; ".join(r["reasons"][:3])
+                    m.note = f"{m.note}; {note}" if m.note else note
                     return m
+            for r in evals:
+                if not r["blocked"] and r["confidence"] >= smartmatch.SUGGEST and (not near or r["confidence"] > near["confidence"]):
+                    near = r
+        if near:
+            c = near["cand"]
+            self.last_suggestion = {"candidate": c, "id": str(c.get("id")), "title": c.get("title") or "",
+                                    "authors": c.get("authors") or [], "confidence": round(near["confidence"], 2),
+                                    "reasons": near["reasons"]}
         return None

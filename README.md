@@ -490,8 +490,22 @@ LibraryThing has no reading status or progress: a "status" is which collection a
 
 ## Behaviour notes
 - **Matching:**
-  - Title matching uses ShelfSync's similarity scoring. Unconfident matches are skipped, not guessed, and retried
-    every 6 hours. Use **Find edition…** to link them by hand.
+  - **Smart matching (0.6.0+)** decides whether a search result is your book. It runs entirely on your server: no AI
+    service, no download, nothing sent anywhere.
+    - It understands volume numbers (*Vol. 2*, *Volume II*, *Book Two*, *#2*), series tags such as *(Mistborn, #2)*,
+      subtitles and edition notes, so *"White Sand, Vol. 1"* matches *"White Sand, Volume 1"* but never *Volume 2*.
+    - It never links a box set, omnibus, study guide, summary or dramatised adaptation to a single book, or a book by
+      someone else.
+    - When the first search finds nothing usable it tries again (main title + surname, then the title alone; one
+      extra search on Goodreads).
+    - A service title that only adds a subtitle (*"Green"* vs *"Green: The Beginning and the End"*) links on its own
+      when the ISBN or page count agrees; otherwise it becomes a suggestion.
+    - Unconfident matches are never guessed. The best near miss is shown as a **suggestion** with how sure it is and
+      why, on the book and in the Import tab's *Not matched* list, with a one-click **Use this**. Matching is retried
+      every 6 hours.
+    - **Find edition…** shows its verdict on every result. The editions you pick there teach it what you prefer: a
+      small model (a handful of weights, kept close to its defaults) is stored per account. **Settings → Smart
+      matching** shows what it has learned and can reset it.
   - **Editions:** StoryGraph, Goodreads and Fable say which language and format each edition is. Heliograph only links
     editions in your **Preferred edition language** (default English; blank = any). The format follows your Hardcover
     edition: for a book you **listened** to (an audiobook edition in Hardcover), an audiobook edition is preferred, with

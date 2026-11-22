@@ -378,6 +378,7 @@ class Goodreads(Provider):
     HOME = "https://www.goodreads.com/"
     SUPPORTED = ("want", "reading", "read", "paused", "dnf")   # paused/dnf are write-only on Goodreads
     CHECKS_EDITIONS = True
+    SEARCHES = 2          # each extra search is another request Goodreads' WAF counts
 
     def __init__(self, config, log):
         super().__init__(config, log)

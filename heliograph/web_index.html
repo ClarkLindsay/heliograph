@@ -38,6 +38,7 @@ a{color:var(--acc)}.ico{border-radius:6px;vertical-align:middle;margin-right:6px
 const $=s=>document.querySelector(s);
 function h(tag,attrs,...kids){const e=document.createElement(tag);for(const[k,v]of Object.entries(attrs||{})){if(k==='class')e.className=v;else if(k.startsWith('on'))e.addEventListener(k.slice(2),v);else if(v===true)e.setAttribute(k,'');else if(v!==false&&v!=null)e.setAttribute(k,v)}
  for(const c of kids.flat())if(c!=null&&c!==false)e.append(c.nodeType?c:document.createTextNode(String(c)));return e}
+const pct=x=>Math.round((x||0)*100)+'%';
 const hm=s=>{const m=Math.round(s/60);return m>=60?`${Math.floor(m/60)}h ${m%60}m`:`${m}m`};
 function fill(el,...c){el.replaceChildren(...c.flat().filter(x=>x!=null&&x!==false))}
 function put(el,...c){c.flat().filter(x=>x!=null&&x!==false).forEach(x=>el.append(x))}
@@ -238,7 +239,11 @@ function importTab(){const m=$('#main'),tok=tabToken;let ui=null;fill(m,h('p',{c
   const rc=j.running&&j.recent&&j.recent.length;ui.recent.style.display=rc?'':'none';if(rc)setText(ui.recent,j.recent.join('\n'));
   ui.dl.style.display=j.log_available?'':'none';
   list(ui.unm,'u',j.unmatched||[],'⚑ Not matched','No confident match was found on these services. Open one, press “Find edition…” on that service, and pick or paste the right edition. They are also flagged in the Books tab.',
-    i=>h('div',{class:'cand'},h('div',{class:'grow'},h('b',{},i.title),h('div',{class:'small mut'},i.authors+' · '+i.label)),h('button',{class:'btn small pri',onclick:()=>openBook(i.id)},'Link manually…')));
+    i=>{const res=h('span',{class:'small'});const s=i.suggestion;
+      return h('div',{class:'cand'},h('div',{class:'grow'},h('b',{},i.title),h('div',{class:'small mut'},i.authors+' · '+i.label),
+        s?h('div',{class:'small'},'Suggested: ',h('b',{},s.title),h('span',{class:'mut'},` · ${pct(s.confidence)} sure: ${s.reasons.join('; ')}`)):null,res),
+        s?h('button',{class:'btn small pri',onclick:async e=>{e.target.disabled=true;try{await api(`/api/book/${i.id}/${i.service}/link`,{candidate:s.candidate});res.textContent=' ✓ linked';e.target.remove()}catch(x){e.target.disabled=false;res.textContent=' '+x.message}}},'Use suggestion'):null,
+        h('button',{class:'btn small'+(s?'':' pri'),onclick:()=>openBook(i.id)},'Link manually…'))});
   list(ui.fail,'f',j.failed_items||[],'Failed','These errored even after automatic retries. “Retry failed” runs just these again.',
     i=>h('div',{class:'cand'},h('div',{class:'grow'},h('b',{},i.title),h('div',{class:'small mut'},i.authors+' · '+i.label),h('div',{class:'small',style:'color:var(--bad)'},i.error)),h('button',{class:'btn small',onclick:()=>openBook(i.id)},'Open')));
   const ej=await api('/api/editions');if(tok!==tabToken)return 8000;
@@ -296,6 +301,9 @@ async function openBook(id){const md=$('#modal');const flash={};let cover=null,p
   put(box,h('div',{class:'row'},homeIcon({key:k,label:svcLabels[k]||k,home:svcHome[k]},20),h('b',{},svcLabels[k]||k),h('span',{class:'chip '+v.state},LAB[v.state]||v.state),v.manual?h('span',{class:'small mut'},'(manual link)'):null,
     v.url?h('a',{href:v.url,target:'_blank',rel:'noopener noreferrer',class:'small'},'open ↗'):null,h('span',{class:'grow'}),v.pushed_at?h('span',{class:'small mut'},'last pushed '+ago(v.pushed_at)):null),
    v.remote_id?h('div',{class:'small mut'},'id: '+v.remote_id):null,v.error?h('div',{class:'small',style:'color:var(--bad)'},v.error):null,
+   v.suggest?h('div',{class:'msg small',style:'margin:6px 0'},h('div',{class:'row'},h('span',{class:'grow'},'Suggested: ',h('b',{},v.suggest.title),
+     v.suggest.authors.length?' · '+v.suggest.authors.join(', '):'',h('span',{class:'mut'},` · ${pct(v.suggest.confidence)} sure: ${v.suggest.reasons.join('; ')}`)),
+     h('button',{class:'btn small pri',onclick:()=>act(`/api/book/${b.id}/${k}/link`,{candidate:v.suggest.candidate})},'Use this'))):null,
    h('div',{class:'row',style:'margin-top:6px'},
     h('button',{class:'btn small',onclick:()=>search()},'Find edition…'),
     h('button',{class:'btn small',disabled:!v.remote_id&&v.state!=='pending'&&v.state!=='recorded'&&v.state!=='nomatch'&&v.state!=='error',onclick:()=>act(`/api/book/${b.id}/${k}/push`,{},r=>{flash[k]={t:r.result.error?('Failed: '+r.result.error):(r.result.pushed?`Pushed ${r.result.pushed} update(s).`:(r.result.linked?'Nothing needed pushing.':'No match found yet.')),c:r.result.error?'bad':'good'};draw(r.book)})},'Push current status now'),
@@ -307,7 +315,9 @@ async function openBook(id){const md=$('#modal');const flash={};let cover=null,p
    const list=h('div');
    const candRow=c=>h('div',{class:'cand'},
      c.cover?h('img',{class:'thumb',src:c.cover,alt:'',loading:'lazy',referrerpolicy:'no-referrer'}):h('div',{class:'thumb'}),
-     h('div',{class:'grow'},h('b',{},c.title),h('div',{class:'small mut'},c.authors.join(', ')+(c.pages?' · '+c.pages+' pages':'')+(k==='pagebound'?' · '+c.id:''))),
+     h('div',{class:'grow'},h('b',{},c.title),h('div',{class:'small mut'},c.authors.join(', ')+(c.pages?' · '+c.pages+' pages':'')+(k==='pagebound'?' · '+c.id:'')),
+       c.match?h('div',{class:'small',style:`color:var(--${c.match.blocked?'bad':c.match.ok?'ok':'mut'})`},
+         c.match.blocked?'Not this book: '+c.match.blocked:`${c.match.ok?'Match':'Possible match'} · ${pct(c.match.confidence)} · ${c.match.reasons.join('; ')}`):null),
      c.url?h('a',{href:c.url,target:'_blank',rel:'noopener noreferrer',class:'small'},'open ↗'):null,
      h('button',{class:'btn small pri',onclick:()=>act(`/api/book/${b.id}/${k}/link`,{candidate:c.raw})},'Use this'));
    const run=async()=>{
@@ -340,6 +350,11 @@ async function settings(){const m=$('#main');m.replaceChildren(h('p',{class:'mut
   fill(m,stt.secrets?h('div',{class:'msg small '+(stt.secrets.encrypted?'good':'warn')},stt.secrets.encrypted?'Secrets are stored encrypted in config.json.':'Secrets saved here are stored unencrypted in config.json — '+(stt.secrets.detail||'no key configured')+'. See README → Protecting secrets.'):null,h('p',{class:'mut small'},'Changes apply on the next sync cycle. A newly enabled service first records your current library (nothing is pushed) unless “First run” is set to import_all. Secrets are never shown here.'),...sec,
    h('div',{class:'row'},h('button',{class:'btn pri',onclick:async()=>{const body={};for(const{S,f,inp}of inputs){if(f.locked)continue;let v=f.kind==='bool'?inp.checked:inp.value;if(f.auto&&!f.value&&v===f.auto)v='';body[S]=body[S]||{};body[S][f.key]=v}
      try{const r=await api('/api/settings',body);savedMsg={t:r.saved?`Saved ${r.saved} change(s).`+(r.notes.length?' '+r.notes.join('; '):''):'No changes.'+(r.notes.length?' '+r.notes.join('; '):''),c:'good'};settings()}catch(e){note(res,e.message,'bad')}}},'Save settings')),res)
+  const mt=h('div',{class:'small'}),showM=s=>{const n=Object.keys(s.adjusted).length;setText(mt,s.learned_from?`Learned from ${s.learned_from} edition(s) you picked by hand; ${n} of its weights have moved from the defaults.`:'Using its built-in judgement; it hasn’t learned from your picks yet.')};
+  put(m,h('div',{class:'card',style:'margin-top:16px'},h('h3',{},'Smart matching'),
+   h('p',{class:'small mut'},'Decides whether a search result is your book: it understands volume numbers (Vol. / Volume / Book / #, roman numerals), series tags and subtitles, never links box sets, study guides or adaptations to a single book, tries a second search when the first finds nothing, and offers its best near miss as a one-click suggestion. It runs entirely on this server (no AI service, nothing sent anywhere) and learns from the editions you pick in “Find edition…”.'),
+   h('div',{class:'row'},mt,h('span',{class:'grow'}),h('button',{class:'btn small',onclick:async()=>{if(!confirm('Forget what matching has learned from your picks?'))return;try{showM(await api('/api/matching/reset',{}))}catch(e){setText(mt,e.message)}}},'Reset what it learned'))));
+  api('/api/matching').then(showM).catch(()=>{});
  }catch(e){m.replaceChildren(h('div',{class:'msg bad'},e.message))}}
 api('/api/me').then(r=>{me=r;fill($('#who'),h('span',{class:'mut'},r.user),h('button',{class:'btn small',onclick:async()=>{try{await api('/auth/logout',{})}catch(e){}location.reload()}},'Sign out'));setTab('dash')}).catch(()=>setTab('dash'));
 </script></body></html>
