@@ -305,6 +305,12 @@ class Api:
         if custom.startswith(("https://", "http://")):
             return custom
         user = getattr(self.e._hc, "username", None)
+        if not user and (self.cfg["hardcover"].get("token") or "").strip():
+            try:
+                hc = self.e.hc(); hc.user_id                             # one request, then cached by the client
+                user = getattr(hc, "username", None)
+            except Exception:
+                user = None
         return f"https://hardcover.app/@{user}" if user else "https://hardcover.app/"
 
     def auto_home(self, section):
