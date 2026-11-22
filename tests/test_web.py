@@ -266,6 +266,14 @@ def test_icons_and_hashed_password():
             open(os.path.join(tmp, "icons", "heliograph.png"), "wb").write(b"\x89PNG fake")
             code, body = call(srv, "GET", "/icons/heliograph", creds="pw1"); assert code == 200 and body.startswith(b"\x89PNG")
             assert call(srv, "GET", "/favicon.ico", creds="pw1")[1].startswith(b"\x89PNG") and call(srv, "GET", "/icons/..%2Fc", creds="pw1")[0] == 404
+            # Home Screen icons: no password needed (iOS doesn't send it); nothing else opens up
+            code, body = call(srv, "GET", "/apple-touch-icon.png")
+            assert code == 200 and body.startswith(b"\x89PNG")
+            assert call(srv, "GET", "/apple-touch-icon-precomposed.png")[0] == 200 and call(srv, "GET", "/icon-512.png")[0] == 200
+            code, body = call(srv, "GET", "/manifest.webmanifest")
+            assert code == 200 and json.loads(body)["icons"][0]["src"] == "/apple-touch-icon.png"
+            assert call(srv, "GET", "/")[0] == 401 and call(srv, "GET", "/api/status")[0] == 401 and call(srv, "GET", "/favicon.ico")[0] == 401
+            assert call(srv, "POST", "/apple-touch-icon.png", {})[0] == 401
             open(os.path.join(tmp, "icons", "evil.svg"), "w").write("<svg/>")     # only known service names are served
             assert call(srv, "GET", "/icons/evil", creds="pw1")[0] == 404 and call(srv, "GET", "/icons/..%2Ficons%2Fgoodreads", creds="pw1")[0] == 404
         finally:

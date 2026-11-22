@@ -10,6 +10,15 @@ from .engine import Busy
 INDEX = Path(__file__).with_name("web_index.html")
 APP_ICON_KEY = "heliograph"          # icons/heliograph.png (or .svg/.webp/.jpg) in the data volume is the app's own icon / favicon
 FALLBACK_ICON = Path(__file__).with_name("heliograph.svg").read_bytes()   # built-in app icon / favicon
+TOUCH_ICON = Path(__file__).with_name("apple-touch-icon.png").read_bytes()  # 180 px, square: iOS rounds the corners
+ICON_512 = Path(__file__).with_name("icon-512.png").read_bytes()
+MANIFEST = json.dumps({"name": "Heliograph", "short_name": "Heliograph", "start_url": "/", "display": "standalone",
+                       "background_color": "#0f4c5c", "theme_color": "#0f4c5c",
+                       "icons": [{"src": "/apple-touch-icon.png", "sizes": "180x180", "type": "image/png"},
+                                 {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png"}]}).encode()
+# App icons are served without the web password: iOS and Android fetch them for the Home Screen without sending it,
+# and they reveal nothing. Everything else still needs the password.
+PUBLIC_ICON_PATHS = ("/apple-touch-icon.png", "/apple-touch-icon-precomposed.png", "/icon-512.png", "/manifest.webmanifest")
 ICON_TYPES = {"svg": "image/svg+xml", "png": "image/png", "webp": "image/webp", "jpg": "image/jpeg",
               "jpeg": "image/jpeg", "gif": "image/gif"}
 HEADER = "X-Requested-With"
@@ -379,7 +388,17 @@ def make_handler(api, cfg):
                 return False
             return True
 
+        def _public_icon(self, path):
+            if path == "/manifest.webmanifest":
+                return self._send(200, MANIFEST, "application/manifest+json")
+            custom = APP_DIR / "icons" / f"{APP_ICON_KEY}.png"            # your own icon, if you've added one
+            if custom.is_file() and custom.stat().st_size < 5_000_000:
+                return self._send(200, custom.read_bytes(), "image/png")
+            return self._send(200, ICON_512 if path == "/icon-512.png" else TOUCH_ICON, "image/png")
+
         def _route(self, method):
+            if method == "GET" and urlparse(self.path).path in PUBLIC_ICON_PATHS:
+                return self._public_icon(urlparse(self.path).path)
             if not self._authorized():
                 return
             u = urlparse(self.path); path, q = u.path, parse_qs(u.query)
