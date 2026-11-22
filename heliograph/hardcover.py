@@ -24,6 +24,15 @@ class HardcoverError(Exception):
     pass
 
 
+class HardcoverDailyLimit(HardcoverError):
+    """Hardcover's daily request allowance is used up: waiting a few seconds won't help."""
+    def __init__(self, seconds, limit=None):
+        self.seconds = seconds
+        h, m = divmod(max(1, round(seconds / 60)), 60)
+        super().__init__(f"Hardcover's daily limit{f' of {limit} requests' if limit else ''} is used up; "
+                         f"it resets in {f'{h}h ' if h else ''}{m}m")
+
+
 @dataclass
 class Book:
     ub_id: int
@@ -101,7 +110,13 @@ class HardcoverClient:
             r = requests.post(API, json={"query": query, "variables": variables or {}}, timeout=30, headers={
                 "authorization": f"Bearer {self.token}", "content-type": "application/json",
                 "user-agent": "HardcoverSync/0.3"})
-            if r.status_code == 429:               # Hardcover allows ~60 req/min
+            if r.status_code == 429:               # Hardcover allows ~60 req/min, and 5,000 a day
+                try:
+                    wait = int(r.headers.get("Retry-After") or 0)
+                except ValueError:
+                    wait = 0
+                if wait > 120:                     # the daily allowance, not the per-minute one
+                    raise HardcoverDailyLimit(wait, r.headers.get("X-Ratelimit-Daily-Limit"))
                 time.sleep(10 * (attempt + 1)); continue
             if r.status_code == 401:
                 raise HardcoverError("Hardcover rejected the token (expired or wrong)")

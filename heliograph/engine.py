@@ -4,7 +4,7 @@ from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from . import bookorbit, dates, smartmatch
 from .config import APP_DIR
-from .hardcover import HardcoverClient
+from .hardcover import HardcoverClient, HardcoverDailyLimit
 from .providers.base import AuthError, is_audio
 
 RELINK_AFTER = 6 * 3600          # retry an unmatched book every 6h
@@ -646,7 +646,7 @@ class Engine:
         return self.bo_job
 
     def _bo_scan(self, client, full):
-        job = self.bo_job
+        job, seen = self.bo_job, None
         try:
             books = client.books()
             job["total"] = len(books)
@@ -659,6 +659,8 @@ class Engine:
                     job["message"] = f"Checking '{b.get('title')}' on Hardcover…"
                     try:
                         p = bookorbit.plan_book(b, look, self.matcher)
+                    except HardcoverDailyLimit:
+                        raise
                     except Exception as e:
                         p = {"id": b["id"], "title": b.get("title") or "", "authors": b.get("authors") or [], "changes": {},
                              "why": [], "fix": "error", "problem": f"couldn't check: {str(e)[:150]}"}
@@ -669,7 +671,6 @@ class Engine:
                         items.append(p)
                         job["items"] = items
                 job["done"] += 1
-            self.state.set("bookorbit_seen", json.dumps(seen))
             counts = {}
             for p in items:
                 counts[p["fix"]] = counts.get(p["fix"], 0) + 1
@@ -679,10 +680,17 @@ class Engine:
                               + (f", {job['skipped']} already right" if job["skipped"] else "")) if items else \
                 f"All {len(books)} books have the right Hardcover book, edition and language"
             self.log.info("BookOrbit: %s", job["message"])
+        except HardcoverDailyLimit as e:
+            # stop cleanly: what's checked is kept (and skipped next time), the rest waits for the reset
+            job["message"] = (f"Paused after {job['done']} of {job['total']} books: {e}. Scan again then to carry on; "
+                              "books already checked are skipped")
+            self.log.warning("BookOrbit scan: %s", job["message"])
         except Exception as e:
             self.log.error("BookOrbit scan failed: %s", e)
             job["message"] = f"Failed: {e}"
         finally:
+            if seen is not None:
+                self.state.set("bookorbit_seen", json.dumps(seen))
             job.update(running=False, finished=time.time())
 
     def apply_bookorbit(self, keys):

@@ -112,7 +112,40 @@ def test_engine_scan_apply_and_ebook_switch():
             bo.HardcoverLookup = orig
 
 
-ALL = [test_kind_and_edition_rules, test_plan_book, test_engine_scan_apply_and_ebook_switch]
+def test_scan_pauses_at_hardcovers_daily_limit():
+    from heliograph.config import Config
+    from heliograph.engine import Engine
+    from heliograph.hardcover import HardcoverDailyLimit
+    from heliograph.state import State
+
+    class Tired(Look):
+        def editions(self, bid):
+            if bid == 2: raise HardcoverDailyLimit(3 * 3600 + 120, "5000")
+            return super().editions(bid)
+
+    class Client:
+        def books(self): return [book(1, "Dune", ["Frank Herbert"], ["epub"], hardcoverId="dune", hardcoverEditionId="12"),
+                                 book(2, "The Hobbit", ["J.R.R. Tolkien"], ["epub"], hardcoverId="the-hobbit")]
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        cfg = Config(os.path.join(tmp, "c.json"))
+        eng = Engine(cfg, [], State(os.path.join(tmp, "s.db")), logging.getLogger("t"), hardcover=object())
+        eng.bookorbit = lambda: Client()
+        orig = bo.HardcoverLookup
+        bo.HardcoverLookup = lambda hc: Tired()
+        try:
+            eng.start_bookorbit_scan()
+            while eng.bo_job["running"]: time.sleep(0.05)
+            j = eng.bo_job
+            assert j["message"].startswith("Paused after 1 of 2 books") and "resets in 3h 2m" in j["message"], j["message"]
+            assert not j["items"]                                           # the Hobbit wasn't marked as an error
+            assert "1" in eng._bo_seen() and "2" not in eng._bo_seen()       # Dune is kept: the next scan skips it
+        finally:
+            bo.HardcoverLookup = orig
+
+
+ALL = [test_kind_and_edition_rules, test_plan_book, test_engine_scan_apply_and_ebook_switch,
+       test_scan_pauses_at_hardcovers_daily_limit]
 
 if __name__ == "__main__":
     for t in ALL:
