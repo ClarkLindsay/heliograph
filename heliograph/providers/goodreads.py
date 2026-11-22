@@ -330,12 +330,16 @@ def date_parts(v):
     return (y, m, d) if y >= 1 and 1 <= m <= 12 and 1 <= d <= 31 else None
 
 
-def prepare_finished_sessions(sessions, book_id, finished, stamp_ms):
-    """-> (new_sessions, already_has_date, error)"""
+def prepare_finished_sessions(sessions, book_id, finished, stamp_ms, started=None):
+    """-> (new_sessions, already_has_date, error). `started`: the read's start date, if known."""
     fd = date_parts(finished)
     out = list(sessions)
-    for s in sessions:
+    for i, s in enumerate(sessions):
         if isinstance(s, dict) and date_parts(s.get("endedDate")) == fd:
+            sd = date_parts(s.get("startedDate"))
+            if started and (sd is None or sd == fd) and date_parts(started) != fd:
+                out[i] = {**s, "startedDate": started}        # no start, or the old same-day placeholder: fill it
+                return out, False, None
             return out, True, None
     for i, s in enumerate(sessions):
         if (isinstance(s, dict) and s.get("bookId") == book_id and s.get("state") == "READING"
@@ -346,7 +350,7 @@ def prepare_finished_sessions(sessions, book_id, finished, stamp_ms):
     if len(sessions) >= 25:
         return None, False, "Goodreads already has the maximum number of reading sessions"
     out.append({"__typename": "ReadingSession", "id": f"new-{stamp_ms}", "bookId": book_id,
-                "state": "COMPLETED", "startedDate": finished, "endedDate": finished})
+                "state": "COMPLETED", "startedDate": started, "endedDate": finished})
     return out, False, None
 
 
@@ -711,7 +715,7 @@ class Goodreads(Provider):
             "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"})
         if status == "read" and book.finished_on:     # Hardcover's finish date; none there = none invented here
             try:
-                self.set_date_finished(remote_id, book.finished_on)
+                self.set_date_finished(remote_id, book.finished_on, book.started_on)
             except (ProviderError, requests.RequestException, ValueError) as e:
                 self.log.warning("Goodreads: finish date for '%s' not saved: %s", book.title, e)
 
@@ -765,13 +769,17 @@ class Goodreads(Provider):
                 return c["id"]
         return None
 
-    def set_date_finished(self, book_id, finished_on=None):
+    def set_date_finished(self, book_id, finished_on=None, started_on=None):
         if finished_on and re.match(r"^\d{4}-\d{2}-\d{2}", finished_on):
             y, m, d = (int(x) for x in finished_on[:10].split("-"))
         else:
             t = time.localtime()
             y, m, d = t.tm_year, t.tm_mon, t.tm_mday
         finished = {"__typename": "NullableDate", "year": y, "month": m, "day": d}
+        started = None
+        if started_on and re.match(r"^\d{4}-\d{2}-\d{2}", started_on) and started_on[:10] <= finished_on[:10]:
+            sy, sm, sd = (int(x) for x in started_on[:10].split("-"))
+            started = {"__typename": "NullableDate", "year": sy, "month": sm, "day": sd}
         edit_url = f"{BASE}/review/edit/{book_id}"
         r = self._req("GET", edit_url)
         if r.status_code != 200:
@@ -780,7 +788,7 @@ class Goodreads(Provider):
         if not state:
             raise ProviderError("couldn't read the Goodreads review editor state")
         sessions, already, err = prepare_finished_sessions(state["reading_sessions"], state["book_id"],
-                                                           finished, int(time.time() * 1000))
+                                                           finished, int(time.time() * 1000), started)
         if err:
             raise ProviderError(err)
         if already:

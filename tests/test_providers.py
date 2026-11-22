@@ -233,7 +233,7 @@ def test_goodreads_writes_and_headers():
             p.set_rating("77", 4.4, b); p.set_status("77", "read", b)
             assert dated.call_count == 0                     # no finish date in Hardcover: none invented
             b.finished_on = "2026-02-03"; p.set_status("77", "read", b)
-            dated.assert_called_once_with("77", "2026-02-03")
+            dated.assert_called_once_with("77", "2026-02-03", None)
         posts = [x for x in calls if x[0] == "POST"]
         assert posts[0][2] == {"book_id": "77", "name": "currently-reading", "a": ""}
         assert posts[0][4]["X-Prototype-Version"] == "1.7" and posts[0][4]["X-CSRF-Token"] == "C" and posts[0][4]["Cookie"] == "a=1"
@@ -285,6 +285,15 @@ def test_goodreads_finished_sessions_logic():
     assert out[0]["endedDate"] == fin and not already and not err                      # closes the active session
     assert gr.prepare_finished_sessions([{"endedDate": fin}], "kca://b", fin, 1)[1] is True
     assert gr.prepare_finished_sessions([{}] * 25, "kca://b", fin, 1)[2]
+    start = {"__typename": "NullableDate", "year": 2026, "month": 2, "day": 1}
+    out, already, _ = gr.prepare_finished_sessions([], "kca://b", fin, 1, start)        # a new read: Hardcover's start
+    assert out[0]["startedDate"] == start and out[0]["endedDate"] == fin and not already
+    assert gr.prepare_finished_sessions([], "kca://b", fin, 1)[0][0]["startedDate"] is None   # unknown: none, not the finish
+    for old_start in (None, fin):                                                       # no start, or the same-day placeholder
+        out, already, _ = gr.prepare_finished_sessions([{"startedDate": old_start, "endedDate": fin}], "kca://b", fin, 1, start)
+        assert out[0]["startedDate"] == start and not already
+    real = {"year": 2026, "month": 1, "day": 9}                                         # a start you set yourself stays
+    assert gr.prepare_finished_sessions([{"startedDate": real, "endedDate": fin}], "kca://b", fin, 1, start)[1] is True
 
 
 # ------------------------------------------------------------------ storygraph

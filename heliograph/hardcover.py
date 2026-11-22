@@ -16,7 +16,7 @@ UB_FIELDS = """
   book { id title pages contributions { contribution author { name } } }
   edition { reading_format_id audio_seconds }
   user_book_reads(order_by: {id: desc}, limit: 1) { id progress_pages progress_seconds started_at finished_at }
-  last_finished: user_book_reads(where: {finished_at: {_is_null: false}}, order_by: {finished_at: desc}, limit: 1) { finished_at }
+  last_finished: user_book_reads(where: {finished_at: {_is_null: false}}, order_by: {finished_at: desc}, limit: 1) { started_at finished_at }
 """
 
 
@@ -38,6 +38,7 @@ class Book:
     book_id: Optional[int] = None
     edition_id: Optional[int] = None
     finished_on: Optional[str] = None   # YYYY-MM-DD of the latest read
+    started_on: Optional[str] = None    # when that read started, if Hardcover knows
     audio: bool = False                 # your Hardcover edition is an audiobook ("Listened")
     seconds: Optional[int] = None       # audiobook progress: time listened
     total_seconds: Optional[int] = None # audiobook length
@@ -71,12 +72,13 @@ def book_from_ub(ub: dict) -> Book:
         role = (c.get("contribution") or "").strip().lower()
         if c.get("author") and role in ("", "author"):      # not narrators / illustrators / translators
             authors.append(c["author"]["name"])
+    done = read if read.get("finished_at") else (ub.get("last_finished") or [{}])[0]
     return Book(
         ub_id=ub["id"], title=book.get("title") or "", authors=authors,
         status=STATUS.get(ub.get("status_id")), pages=read.get("progress_pages"),
         total_pages=book.get("pages") or None, rating=ub.get("rating"),
         book_id=ub.get("book_id"), edition_id=ub.get("edition_id"),
-        finished_on=(read.get("finished_at") or ((ub.get("last_finished") or [{}])[0].get("finished_at")) or None),
+        finished_on=done.get("finished_at") or None, started_on=done.get("started_at") or None,
         audio=(ub.get("edition") or {}).get("reading_format_id") == AUDIO_FORMAT,
         seconds=read.get("progress_seconds"), total_seconds=(ub.get("edition") or {}).get("audio_seconds") or None,
     )

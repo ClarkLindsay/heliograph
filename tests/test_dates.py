@@ -131,6 +131,10 @@ def test_finish_date_is_the_latest_finished_read():
           "user_book_reads": [{"id": 9, "started_at": "2022-09-17", "finished_at": None}],     # a re-read never finished
           "last_finished": [{"finished_at": "2022-09-15"}]}
     assert book_from_ub(ub).finished_on == "2022-09-15"
+    ub["last_finished"][0]["started_at"] = "2022-08-01"
+    assert book_from_ub(ub).started_on == "2022-08-01"              # the start of that same read
+    ub["user_book_reads"] = [{"id": 9, "started_at": "2023-01-01", "finished_at": "2023-02-01"}]
+    assert (book_from_ub(ub).started_on, book_from_ub(ub).finished_on) == ("2023-01-01", "2023-02-01")
 
 
 def test_engine_scan_and_apply():
