@@ -636,6 +636,18 @@ def test_pagebound_flow():
         put = [x for x in calls if x[0] == "PUT"][-1]
         assert put[2]["status"] == "finished" and put[2]["finished_reading_at"] == "2/3/2026"
         assert pb.status_payload("reading", None)["total_minutes"] is None
+        calls.clear()                              # already rated: the review is changed in place, never posted again
+        def rated(method, url, **kw):
+            path = url.replace(pb.API, "")
+            if path.startswith("/api/v1/user_books?page=1&q="):
+                calls.append((method, path, None))
+                return Resp(200, {"user_books": [{"book_id": 5, "review": {"id": 77, "overall_rating": "3.0"}}], "total_pages": 1})
+            return fake(method, url, **kw)
+        with mock.patch("requests.request", side_effect=rated):
+            p.set_rating("5:UU", 4.5, b)
+            p.set_rating("5:UU", 3, b)                                              # same as Pagebound has: nothing sent
+        writes = [(m, u, j) for m, u, j in calls if m != "GET"]
+        assert writes == [("PUT", "/api/v1/reviews/77", {"review": {"overall_rating": 4.5}})]
 
 
 def test_pagebound_search_candidates():

@@ -295,10 +295,35 @@ class Pagebound(Provider):
         existing, _pc = self._user_book(remote_id)
         if not existing:
             raise ProviderError("Pagebound: no reading-list entry for this book yet")
-        n = None      # Pagebound takes half stars (floor), like the plugin
-        code, _d = self._req("/api/v1/reviews", "POST", {"review": {
-            "overall_rating": int(float(rating) * 2) / 2, "quality_rating": n, "entertainment_rating": n, "plot_rating": n,
-            "audiobook_rating": n, "character_rating": n, "is_spoiler": False, "review": "", "emojis": [],
-            "book_id": int(bid), "user_book_id": int(existing["user_book_id"]), "is_dnf": False}})
+        stars = int(float(rating) * 2) / 2      # Pagebound takes half stars (floor), like the plugin
+        rv = self._review(int(bid), getattr(book, "title", None))
+        if rv:                                  # already rated: change that review (a second POST is refused)
+            if rv.get("overall_rating") is not None and float(rv["overall_rating"]) == stars:
+                return
+            code, _d = self._req(f"/api/v1/reviews/{rv['id']}", "PUT", {"review": {"overall_rating": stars}})
+        else:
+            n = None
+            code, _d = self._req("/api/v1/reviews", "POST", {"review": {
+                "overall_rating": stars, "quality_rating": n, "entertainment_rating": n, "plot_rating": n,
+                "audiobook_rating": n, "character_rating": n, "is_spoiler": False, "review": "", "emojis": [],
+                "book_id": int(bid), "user_book_id": int(existing["user_book_id"]), "is_dnf": False}})
         if not (code and 200 <= code < 300):
             raise ProviderError(f"Pagebound rating -> HTTP {code}")
+
+    def _review(self, book_id, title=None):
+        """Your review of a book, or None. The book endpoints don't include it; the reading list does (search by
+        title first, else every page)."""
+        def find(query):
+            for page in range(1, 100):
+                code, d = self._req(f"/api/v1/user_books?page={page}" + (f"&q={quote(query)}" if query else ""))
+                if code != 200 or not isinstance(d, dict):
+                    return None
+                for ub in d.get("user_books") or []:
+                    if ub.get("book_id") == book_id:
+                        return ub.get("review") or {}
+                if page >= (d.get("total_pages") or 1):
+                    return None
+        found = find(title) if title else None
+        if found is None:
+            found = find(None)
+        return found or None
