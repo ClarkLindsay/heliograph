@@ -26,6 +26,7 @@ other services. All credit for working out how to talk to each service goes to t
 - [Changing the web UI port](#changing-the-web-ui-port)
 - [Getting credentials for each service](#getting-credentials-for-each-service)
 - [Web UI](#web-ui)
+- [Accounts and sign-in](#accounts-and-sign-in)
 - [Protecting secrets](#protecting-secrets)
 - [Command line](#command-line)
 - [Config and storage](#config-and-storage)
@@ -157,8 +158,9 @@ your reading data.
    This pulls the newest release. To pin a version, set `HELIOGRAPH_VERSION=0.1.0` in `.env`. Use `edge` for the
    newest `main` branch build.
 
-6. **Open the web UI** at <http://localhost:8080> (or your chosen port), go to **Settings**, paste your
-   **Hardcover API token**, then enable the services you use and fill in their credentials
+6. **Open the web UI** at <http://localhost:8080> (or your chosen port) and **create your account**. The first account
+   is the admin ([Accounts and sign-in](#accounts-and-sign-in)). Then go to **Settings**, paste your
+   **Hardcover API token**, enable the services you use and fill in their credentials
    ([how to get them](#getting-credentials-for-each-service)). Use **Test** next to each service on the Dashboard.
 
    You can set everything as `HELIOGRAPH__<section>__<key>` environment variables in `docker-compose.yml` instead. Those
@@ -286,21 +288,40 @@ Open **http://localhost:8080** (or [your port](#changing-the-web-ui-port)).
 
   The `icons/` folder is gitignored, so logos you add are never committed.
 
+## Accounts and sign-in
+
+One Heliograph can sync several people. Each **account** has its own:
+- Hardcover token, services and credentials;
+- settings and library;
+- links, logs and imports;
+- sync loop.
+
+Nobody sees anyone else's.
+
+- **The first account** becomes the **admin**. Create it from the machine running Heliograph: open
+  <http://localhost:8080>, or another name listed in `HELIOGRAPH__web__allowed_hosts`. That way nobody who finds your
+  address first can claim the install. If you set a web password before 0.4 (`HELIOGRAPH__web__password`), you can
+  instead enter it as the **setup code** from anywhere.
+- **More people:** as admin, open **Users → Create invite code** and give the code to the person you want to let in.
+  They register on the sign-in page with it. Each code works once and expires after 7 days.
+- **Users tab (admin):** lists accounts, deletes them (their data folder is kept aside on the server, not destroyed)
+  and revokes unused codes. Everyone can change their own password under **Account**, which signs out their other
+  devices.
+- **Upgrading from 0.3 or earlier:** your existing settings, library and links are kept and handed to the first account
+  you create. A copy of the old files stays in the data volume under `backup-before-0.4/`.
+- **Environment variables** (`HELIOGRAPH__…`) apply to the admin's settings only. Other users set theirs in the web UI.
+
 **Security:** the UI can push changes to your accounts, so by default it's only reachable from this computer. To use
-it from other devices:
-1. Remove `127.0.0.1:` from the `ports:` line.
-2. Set `HELIOGRAPH__web__password`. This enables HTTP Basic auth, and any username works.
+it from other devices, remove `127.0.0.1:` from the `ports:` line. It's plain HTTP, so use it on your LAN only, or put
+it behind a reverse proxy or tunnel with TLS (Cloudflare Tunnel, Caddy, Traefik).
 
-It's plain HTTP, so use it on your LAN only, or put it behind a reverse proxy with TLS. Without a password, requests
-with an unexpected `Host` header are refused (DNS-rebinding protection). To allow other names, add them to
-`HELIOGRAPH__web__allowed_hosts`.
+How sign-in is protected:
+- Sign-ins use a session cookie (`HttpOnly`, `SameSite=Lax`, and `Secure` behind HTTPS) that lasts 30 days.
+- Repeated wrong passwords for an account are slowed down.
+- Passwords are stored as salted PBKDF2 hashes. Session tokens and invite codes are stored only as hashes.
 
-**Setting the web password.** Store a hash, not the plain password:
-```sh
-docker compose run --rm heliograph python -m heliograph --hash-password
-```
-Copy the `pbkdf2:...` output into `HELIOGRAPH__web__password`. Keep it out of any file you commit or share; see
-[Keeping personal settings out of git](#keeping-personal-settings-out-of-git).
+All users' stored secrets are encrypted with the server's key, if you set one up ([Protecting secrets](#protecting-secrets)).
+Whoever runs the server can therefore read them, as with any self-hosted app.
 
 ## Protecting secrets
 
@@ -336,8 +357,7 @@ are always plain text.
    ```
    The input is hidden, and the command prints `enc:v1:...`. Use that as the value of, for example,
    `HELIOGRAPH__fable__password`. Or point at a file: `HELIOGRAPH__fable__password_FILE: /run/secrets/fable_password`.
-4. **Hash the web UI password:** `docker compose run --rm heliograph python -m heliograph --hash-password`, then paste the
-   result into `HELIOGRAPH__web__password`.
+4. **Web UI passwords** are per account now ([Accounts and sign-in](#accounts-and-sign-in)); nothing to set here.
 
 **Keep a backup of `secrets/heliograph.key`.** Without it, encrypted values can't be read and must be entered again.
 Encryption protects against a leaked compose file, `config.json` or volume backup. It doesn't protect against someone who
@@ -356,7 +376,7 @@ services:
       - heliograph_key                            # encryption on (see Protecting secrets)
     environment:
       TZ: America/New_York
-      HELIOGRAPH__web__password: "pbkdf2:..."     # from --hash-password
+      HELIOGRAPH__web__password: "pbkdf2:..."     # optional: setup code for creating the first account remotely
 secrets:
   heliograph_key:
     file: ./secrets/heliograph.key
@@ -376,7 +396,9 @@ Run any of these with `docker compose run --rm heliograph python -m heliograph <
 | `--init` | Write a default `config.json` and exit |
 | `--gen-key` | Print a new encryption key |
 | `--encrypt` | Prompt for a value (hidden) and print an `enc:v1:...` token |
-| `--hash-password` | Prompt for a web UI password (hidden) and print its hash |
+| `--hash-password` | Prompt for a password (hidden) and print its hash, for `HELIOGRAPH__web__password` (the setup code) |
+| `--user NAME` | With `--check`, `--once` or `--inspect`: which account (default: the admin) |
+| `--reset-password NAME` | Set a new web UI password for an account (prompted, hidden); restart afterwards |
 | `--healthcheck` | Exit 0 if the loop has completed a cycle recently (used by Docker's `HEALTHCHECK`) |
 
 ## Config and storage
@@ -493,7 +515,9 @@ Compose builds the image locally and gives it the same name, so nothing is pulle
 | Symptom | Fix |
 |---|---|
 | `port is already allocated` / `Only one usage of each socket address` | [Change the web UI port](#changing-the-web-ui-port). |
-| Web UI shows *Forbidden* / host refused | Use `localhost`, add your hostname to `HELIOGRAPH__web__allowed_hosts`, or set a web password. |
+| Can't create the first account ("open Heliograph at localhost…") | Open it at `http://localhost:<port>` on the machine running it, enter your old web password as the setup code, or add your host name to `HELIOGRAPH__web__allowed_hosts`. |
+| Someone needs an account | As admin: **Users → Create invite code**, and give them the code. |
+| Forgot your password | On the server: `docker compose exec -it heliograph python -m heliograph --reset-password NAME`, then `docker compose restart`. |
 | Goodreads: WAF / signed-out errors | Refresh the cookie, or set up the [cookie refresher](#goodreads-cookie-refresher). |
 | Goodreads: frequent WAF challenges | Raise **Seconds between Goodreads requests** in Settings (default 3; try 5–10 for big imports). After a challenge the refresher can't clear, Heliograph leaves Goodreads alone for **Pause after a WAF challenge** minutes (default 15) instead of retrying straight away. Other services keep syncing in the meantime. |
 | StoryGraph: auth errors | Copy fresh `_storygraph_session` and `remember_user_token` cookies. |

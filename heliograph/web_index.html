@@ -32,7 +32,7 @@ tr.book{cursor:pointer}tr.book:hover{background:var(--card)}
 .msg{margin:8px 0;padding:8px 10px;border-radius:8px;background:var(--card)}.msg.bad{color:var(--bad)}.msg.good{color:var(--ok)}
 a{color:var(--acc)}.ico{border-radius:6px;vertical-align:middle;margin-right:6px}.thumb{width:48px;height:72px;object-fit:cover;border-radius:4px;background:var(--card);flex:none}.cover{width:64px;height:96px;object-fit:cover;border-radius:5px;background:var(--card);margin-right:12px;flex:none}.msg.warn{color:var(--warn)}.prog{margin:8px 0}@media(max-width:600px){.field{grid-template-columns:1fr}}
 </style></head><body>
-<header><img src="/icons/heliograph" width="26" height="26" alt="" style="border-radius:6px"><h1>Heliograph</h1><nav id="nav"></nav><span class="grow"></span><span id="top" class="mut small"></span></header>
+<header><img src="/icons/heliograph" width="26" height="26" alt="" style="border-radius:6px"><h1>Heliograph</h1><nav id="nav"></nav><span class="grow"></span><span id="top" class="mut small"></span><span id="who" class="row small"></span></header>
 <main id="main"></main><div id="modal"></div>
 <script>
 const $=s=>document.querySelector(s);
@@ -41,7 +41,9 @@ function h(tag,attrs,...kids){const e=document.createElement(tag);for(const[k,v]
 function fill(el,...c){el.replaceChildren(...c.flat().filter(x=>x!=null&&x!==false))}
 function put(el,...c){c.flat().filter(x=>x!=null&&x!==false).forEach(x=>el.append(x))}
 async function api(path,body){const o=body===undefined?{}:{method:'POST',headers:{'X-Requested-With':'heliograph-ui','Content-Type':'application/json'},body:JSON.stringify(body)};
- const r=await fetch(path,o);let j={};try{j=await r.json()}catch(e){}if(!r.ok)throw new Error(j.error||('HTTP '+r.status));return j}
+ const r=await fetch(path,o);if(r.status===401&&path.startsWith('/api/')){location.reload();throw new Error('Signed out')}
+ let j={};try{j=await r.json()}catch(e){}if(!r.ok)throw new Error(j.error||('HTTP '+r.status));return j}
+let me={user:'',admin:false};
 const ago=t=>{if(!t)return'never';const s=Math.max(0,Date.now()/1000-t);return s<90?Math.round(s)+'s ago':s<5400?Math.round(s/60)+'m ago':s<172800?Math.round(s/3600)+'h ago':Math.round(s/86400)+'d ago'};
 const LAB={linked:'linked',nomatch:'no match',error:'error',skip:'skipped',recorded:'recorded',pending:'pending'};
 let tab='dash',timer=null,tabToken=0,onClose=null,svcLabels={},svcHome={},savedMsg=null;
@@ -51,8 +53,34 @@ function mono(key){const b=BRAND[key]||['#666',(key||'?')[0].toUpperCase()];cons
 const safeUrl=u=>/^https?:\/\/\S+$/.test(u||'');
 function homeIcon(x,px){const i=icon(x.key,px||22);return safeUrl(x.home)?h('a',{href:x.home,target:'_blank',rel:'noopener noreferrer',title:'Open '+x.label},i):i}
 function icon(key,px){const i=h('img',{src:'/icons/'+key,width:px,height:px,alt:'',class:'ico'});let done=false;i.addEventListener('error',()=>{if(!done){done=true;i.setAttribute('src',mono(key))}});return i}
-function setTab(t){tab=t;tabToken++;clearTimeout(timer);timer=null;onClose=null;$('#nav').replaceChildren(...[['dash','Dashboard'],['books','Books'],['import','Import'],['settings','Settings']].map(([k,l])=>h('button',{class:tab===k?'on':'',onclick:()=>setTab(k)},l)));
- ({dash:dash,books:books,import:importTab,settings:settings})[t]()}
+function setTab(t){tab=t;tabToken++;clearTimeout(timer);timer=null;onClose=null;$('#nav').replaceChildren(...[['dash','Dashboard'],['books','Books'],['import','Import'],['settings','Settings'],['account',me.admin?'Users':'Account']].map(([k,l])=>h('button',{class:tab===k?'on':'',onclick:()=>setTab(k)},l)));
+ ({dash:dash,books:books,import:importTab,settings:settings,account:account})[t]()}
+
+/* Account: your password; the admin also manages users and invite codes. */
+function account(){const m=$('#main'),tok=tabToken;
+ const cur=h('input',{type:'password',id:'pw-current',autocomplete:'current-password'}),nw=h('input',{type:'password',id:'pw-new',autocomplete:'new-password'}),pwOut=h('div');
+ const pwCard=h('div',{class:'card'},h('h3',{},'Your password'),h('p',{class:'small mut'},`Signed in as ${me.user}${me.admin?' (admin)':''}. Changing your password signs out your other devices.`),
+  h('div',{class:'field'},h('label',{for:'pw-current'},'Current password'),cur),h('div',{class:'field'},h('label',{for:'pw-new'},'New password (8+ characters)'),nw),
+  h('div',{class:'row'},h('span',{class:'grow'}),h('button',{class:'btn pri',onclick:async()=>{try{await api('/api/account/password',{current:cur.value,new:nw.value});cur.value=nw.value='';note(pwOut,'Password changed.','good')}catch(e){note(pwOut,e.message,'bad')}}},'Change password')),pwOut);
+ if(!me.admin){fill(m,pwCard);return}
+ const users=h('div'),invs=h('div'),out=h('div'),code=h('div');
+ const render=r=>{if(tok!==tabToken)return;
+  fill(users,h('table',{},h('tr',{},h('th',{},'User'),h('th',{},'Role'),h('th',{},'Since'),h('th',{})),
+   r.users.map(u=>h('tr',{},h('td',{},u.name),h('td',{},u.admin?'admin':'user'),h('td',{class:'small mut'},new Date(u.created*1000).toLocaleDateString()),
+    h('td',{style:'text-align:right'},u.name===r.me?null:delBtn(u.name))))));
+  fill(invs,r.invites.length?r.invites.map(i=>h('div',{class:'cand'},h('div',{class:'grow small'},`Invite …${i.id.slice(0,6)} by ${i.by} · expires ${new Date(i.expires*1000).toLocaleDateString()}`),
+   h('button',{class:'btn small',onclick:async()=>{try{render(Object.assign(await api('/api/admin/users'),await api('/api/admin/invite/delete',{id:i.id})))}catch(e){note(out,e.message,'bad')}}},'Revoke'))):h('p',{class:'small mut'},'No unused invite codes.'))};
+ const delBtn=name=>{const b=h('button',{class:'btn small danger',onclick:async()=>{
+   if(b.dataset.armed!=='1'){b.dataset.armed='1';b.textContent=`Delete ${name}? Click again`;setTimeout(()=>{b.dataset.armed='';b.textContent='Delete'},4000);return}
+   try{render(Object.assign(await api('/api/admin/users'),await api('/api/admin/user/delete',{name})));note(out,`Deleted ${name}. Their data folder was kept aside on the server.`,'good')}catch(e){note(out,e.message,'bad')}}},'Delete');return b};
+ const mk=h('button',{class:'btn pri',onclick:async()=>{try{const r=await api('/api/admin/invite',{});render(Object.assign(await api('/api/admin/users'),r));
+   const c=h('code',{style:'font-size:17px;user-select:all'},r.code);
+   fill(code,h('div',{class:'msg good'},h('div',{},'New invite code (shown once; works once; expires in 7 days):'),h('div',{class:'row',style:'margin-top:6px'},c,
+    h('button',{class:'btn small',onclick:async()=>{try{await navigator.clipboard.writeText(r.code);note(out,'Copied.','good')}catch(e){getSelection().selectAllChildren(c)}}},'Copy'))))}
+  catch(e){note(out,e.message,'bad')}}},'Create invite code');
+ fill(m,pwCard,h('div',{class:'card',style:'margin-top:12px'},h('h3',{},'Users'),h('p',{class:'small mut'},'Each user has their own Hardcover token, services, library and settings. New people sign up on the sign-in page with an invite code.'),users,out),
+  h('div',{class:'card',style:'margin-top:12px'},h('h3',{},'Invite codes'),h('div',{class:'row'},h('span',{class:'grow small mut'},'Give a code to someone you want to let in.'),mk),code,invs));
+ api('/api/admin/users').then(render).catch(e=>note(out,e.message,'bad'))}
 function note(el,text,cls){el.replaceChildren(h('div',{class:'msg '+(cls||'')},text))}
 
 /* Pages are built once and then updated in place (text, bars, lists whose content changed), so periodic refreshes
@@ -265,5 +293,5 @@ async function settings(){const m=$('#main');m.replaceChildren(h('p',{class:'mut
    h('div',{class:'row'},h('button',{class:'btn pri',onclick:async()=>{const body={};for(const{S,f,inp}of inputs){if(f.locked)continue;const v=f.kind==='bool'?inp.checked:inp.value;body[S]=body[S]||{};body[S][f.key]=v}
      try{const r=await api('/api/settings',body);savedMsg={t:r.saved?`Saved ${r.saved} change(s).`+(r.notes.length?' '+r.notes.join('; '):''):'No changes.'+(r.notes.length?' '+r.notes.join('; '):''),c:'good'};settings()}catch(e){note(res,e.message,'bad')}}},'Save settings')),res)
  }catch(e){m.replaceChildren(h('div',{class:'msg bad'},e.message))}}
-setTab('dash');
+api('/api/me').then(r=>{me=r;fill($('#who'),h('span',{class:'mut'},r.user),h('button',{class:'btn small',onclick:async()=>{try{await api('/auth/logout',{})}catch(e){}location.reload()}},'Sign out'));setTab('dash')}).catch(()=>setTab('dash'));
 </script></body></html>

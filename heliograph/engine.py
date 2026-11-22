@@ -1,5 +1,6 @@
 import csv, io, json, logging, threading, time
 from contextlib import contextmanager
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from .config import APP_DIR
 from .hardcover import HardcoverClient
@@ -23,7 +24,7 @@ class Busy(Exception):
 
 
 class Engine:
-    def __init__(self, config, providers, state, log=None, hardcover=None, dry_run=False, heartbeat=None):
+    def __init__(self, config, providers, state, log=None, hardcover=None, dry_run=False, heartbeat=None, data_dir=None):
         self.config, self.providers, self.state = config, providers, state
         self.log = log or logging.getLogger("heliograph")
         self._hc, self.dry, self.heartbeat = hardcover, dry_run, heartbeat
@@ -37,7 +38,7 @@ class Engine:
         self.job = {"running": False}
         self.ed_job = {"running": False}
         self.job_entries, self.job_results = [], []
-        self.import_dir = APP_DIR / "imports"
+        self.import_dir = (Path(data_dir) if data_dir else APP_DIR) / "imports"      # each user's own import logs
         self._covers = {}
         for p in self.providers:
             p.state = self.state

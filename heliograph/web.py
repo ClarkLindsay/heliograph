@@ -1,13 +1,18 @@
-"""Tiny built-in web UI + JSON API (stdlib only). See web_index.html for the page."""
-import base64, json, re, threading, time
+"""Tiny built-in web UI + JSON API (stdlib only). See web_index.html (the app) and web_login.html (sign in / register).
+Each signed-in user only ever reaches their own engine, settings and log."""
+import json, re, threading, time
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
+from .accounts import AccountError, LoginThrottle, SESSION_DAYS
 from .config import APP_DIR, LOG_PATH
-from .crypto import verify_password
 from .engine import Busy
 
 INDEX = Path(__file__).with_name("web_index.html")
+LOGIN = Path(__file__).with_name("web_login.html")
+COOKIE = "hg_session"
+SERVICE_KEYS = ("goodreads", "storygraph", "fable", "pagebound", "librarything")
 APP_ICON_KEY = "heliograph"          # icons/heliograph.png (or .svg/.webp/.jpg) in the data volume is the app's own icon / favicon
 FALLBACK_ICON = Path(__file__).with_name("heliograph.svg").read_bytes()   # built-in app icon / favicon
 TOUCH_ICON = Path(__file__).with_name("apple-touch-icon.png").read_bytes()  # 180 px, square: iOS rounds the corners
@@ -122,8 +127,9 @@ def tail(path, n):
 
 
 class Api:
-    def __init__(self, engine, config, log):
-        self.e, self.cfg, self.log = engine, config, log
+    """The JSON API for one user: their engine, settings and log."""
+    def __init__(self, engine, config, log, log_path=LOG_PATH):
+        self.e, self.cfg, self.log, self.log_path = engine, config, log, log_path
         self._sync_thread = None
 
     @property
@@ -197,7 +203,7 @@ class Api:
         return self.import_status()
 
     def log_lines(self, n):
-        return {"lines": tail(LOG_PATH, n)}
+        return {"lines": tail(self.log_path, n)}
 
     # ---- actions
     def _guard(self, fn, *a, **kw):
@@ -344,9 +350,20 @@ class Api:
         return {"saved": len(changes), "notes": errors, **self.settings()}
 
 
-def make_handler(api, cfg):
-    html = INDEX.read_bytes()
+def make_handler(hub, cfg, server_log):
+    html, login_html = INDEX.read_bytes(), LOGIN.read_bytes()
     web = cfg["web"]
+    apis, apis_lock, throttle = {}, threading.Lock(), LoginThrottle()
+
+    def api_for(name):
+        rt = hub.runtime(name)
+        if rt is None:
+            return None
+        with apis_lock:
+            a = apis.get(name)
+            if a is None or a.e is not rt.engine:
+                a = apis[name] = Api(rt.engine, rt.config, rt.log, rt.log_path)
+            return a
 
     class Handler(BaseHTTPRequestHandler):
         server_version = "heliograph"
@@ -368,25 +385,87 @@ def make_handler(api, cfg):
             self.end_headers()
             self.wfile.write(data)
 
-        def _authorized(self):
-            pw = web.get("password")
-            if pw:
-                h = self.headers.get("Authorization", "")
-                try:
-                    given = base64.b64decode(h.split(" ", 1)[1]).decode().split(":", 1)[1] if h.startswith("Basic ") else None
-                except Exception:
-                    given = None
-                if given is None or not verify_password(given, pw):
-                    self._send(401, {"error": "Authentication required"}, extra={"WWW-Authenticate": 'Basic realm="Heliograph"'})
-                    return False
-                return True
+        # ---- sessions
+        def _token(self):
+            c = SimpleCookie()
+            try:
+                c.load(self.headers.get("Cookie") or "")
+            except Exception:
+                return None
+            return c[COOKIE].value if COOKIE in c else None
+
+        def _user(self):
+            return hub.accounts.session_user(self._token())
+
+        def _https(self):
+            return (self.headers.get("X-Forwarded-Proto") or "").lower() == "https" or \
+                '"https"' in (self.headers.get("CF-Visitor") or "")
+
+        def _cookie(self, token, max_age):
+            v = f"{COOKIE}={token}; Path=/; HttpOnly; SameSite=Lax; Max-Age={max_age}" + ("; Secure" if self._https() else "")
+            return {"Set-Cookie": v}
+
+        def _local(self):
+            """The page was opened as localhost (or an allowed host name): you're at the machine running it."""
             raw = self.headers.get("Host") or ""
             host = raw[:raw.index("]") + 1] if raw.startswith("[") and "]" in raw else (raw.rsplit(":", 1)[0] if ":" in raw else raw)
             allowed = LOCAL_HOSTS | {h.strip().lower() for h in (web.get("allowed_hosts") or "").split(",") if h.strip()}
-            if host.lower() not in allowed:       # DNS-rebinding protection when there's no password
-                self._send(403, {"error": f"Host '{host}' not allowed; set web.allowed_hosts or a password"})
-                return False
-            return True
+            return host.lower() in allowed
+
+        def _auth(self, method, path, body):
+            """/auth/*: sign in, register, sign out, and what the sign-in page needs to know."""
+            if method == "GET" and path == "/auth/state":
+                return 200, {"first_run": hub.first_run(), "existing_data": hub.has_legacy_data(),
+                             "setup_code": bool(hub.setup_code_hash()), "local": self._local(), "user": self._user()}, None
+            if method != "POST":
+                return 404, {"error": "not found"}, None
+            if path == "/auth/logout":
+                hub.accounts.end_session(self._token())
+                return 200, {"ok": True}, self._cookie("", 0)
+            name = (body.get("username") or "").strip().lower()
+            if path == "/auth/login":
+                wait = throttle.wait_for(name)
+                if wait:
+                    return 429, {"error": f"Too many failed attempts; try again in {int(wait) + 1} s"}, None
+                if not hub.accounts.verify(name, body.get("password") or ""):
+                    throttle.failed(name)
+                    server_log.warning("Failed sign-in for '%s'", name[:40])
+                    return 401, {"error": "Wrong username or password"}, None
+                throttle.ok(name)
+            elif path == "/auth/register":
+                key = "\0register"
+                wait = throttle.wait_for(key)
+                if wait:
+                    return 429, {"error": f"Too many failed attempts; try again in {int(wait) + 1} s"}, None
+                try:
+                    name = hub.register(name, body.get("password") or "", body.get("code") or "", local=self._local())
+                except AccountError as e:
+                    throttle.failed(key)
+                    return 400, {"error": str(e)}, None
+                server_log.info("New account '%s'%s", name, " (admin)" if hub.accounts.is_admin(name) else "")
+            else:
+                return 404, {"error": "not found"}, None
+            token = hub.accounts.new_session(name)
+            return 200, {"user": name, "admin": hub.accounts.is_admin(name)}, self._cookie(token, SESSION_DAYS * 86400)
+
+        def _admin(self, user, method, path, body):
+            if not hub.accounts.is_admin(user):
+                raise ApiError(403, "Only the admin can do that")
+            if method == "GET" and path == "/api/admin/users":
+                return {"users": hub.accounts.users(), "invites": hub.accounts.invites(), "me": user}
+            if method == "POST" and path == "/api/admin/invite":
+                code = hub.accounts.create_invite(user)
+                return {"code": code, "invites": hub.accounts.invites()}
+            if method == "POST" and path == "/api/admin/invite/delete":
+                hub.accounts.delete_invite(str(body.get("id") or ""))
+                return {"invites": hub.accounts.invites()}
+            if method == "POST" and path == "/api/admin/user/delete":
+                try:
+                    hub.delete_user(str(body.get("name") or ""), user)
+                except AccountError as e:
+                    raise ApiError(400, str(e))
+                return {"users": hub.accounts.users()}
+            raise ApiError(404, "not found")
 
         def _public_icon(self, path):
             if path == "/manifest.webmanifest":
@@ -397,46 +476,66 @@ def make_handler(api, cfg):
             return self._send(200, ICON_512 if path == "/icon-512.png" else TOUCH_ICON, "image/png")
 
         def _route(self, method):
-            if method == "GET" and urlparse(self.path).path in PUBLIC_ICON_PATHS:
-                return self._public_icon(urlparse(self.path).path)
-            if not self._authorized():
-                return
             u = urlparse(self.path); path, q = u.path, parse_qs(u.query)
             try:
-                if method == "GET" and path in ("/", "/index.html"):
-                    return self._send(200, html, "text/html; charset=utf-8")
-                if method == "GET" and path == "/api/import/log":
-                    data, name, ctype = api.import_log((q.get("fmt") or ["txt"])[0])
-                    return self._send(200, data, ctype, extra={"Content-Disposition": f'attachment; filename="{name}"'})
+                # public: app icons (Home Screen fetches send no cookie), service logos, the sign-in page
+                if method == "GET" and path in PUBLIC_ICON_PATHS:
+                    return self._public_icon(path)
                 if method == "GET" and path == "/favicon.ico":
                     return self._icon(APP_ICON_KEY)
                 if method == "GET" and path.startswith("/icons/"):
                     return self._icon(path[len("/icons/"):])
-                if not path.startswith("/api/"):
-                    return self._send(404, {"error": "not found"})
                 body = {}
                 if method == "POST":
-                    if self.headers.get(HEADER) != HEADER_VALUE:
+                    if self.headers.get(HEADER) != HEADER_VALUE:            # CSRF: only the page's own requests
                         return self._send(403, {"error": "missing header"})
                     n = int(self.headers.get("Content-Length") or 0)
                     if n > 65536:
                         return self._send(413, {"error": "too large"})
                     raw = self.rfile.read(n) if n else b""
                     body = json.loads(raw or b"{}")
-                res = self._dispatch(method, path, q, body)
-                self._send(200, res)
+                if path.startswith("/auth/"):
+                    code, res, extra = self._auth(method, path, body)
+                    return self._send(code, res, extra=extra)
+                user = self._user()
+                if method == "GET" and path in ("/", "/index.html"):
+                    return self._send(200, html if user else login_html, "text/html; charset=utf-8")
+                if not path.startswith("/api/"):
+                    return self._send(404, {"error": "not found"})
+                if not user:
+                    return self._send(401, {"error": "Please sign in"})
+                if path == "/api/me":
+                    return self._send(200, {"user": user, "admin": hub.accounts.is_admin(user)})
+                if method == "POST" and path == "/api/account/password":
+                    if not hub.accounts.verify(user, body.get("current") or ""):
+                        raise ApiError(400, "Your current password is wrong")
+                    try:
+                        hub.accounts.set_password(user, body.get("new") or "")
+                    except AccountError as e:
+                        raise ApiError(400, str(e))
+                    token = hub.accounts.new_session(user)           # other sessions are signed out
+                    return self._send(200, {"ok": True}, extra=self._cookie(token, SESSION_DAYS * 86400))
+                if path.startswith("/api/admin/"):
+                    return self._send(200, self._admin(user, method, path, body))
+                api = api_for(user)
+                if api is None:
+                    return self._send(503, {"error": "Your settings couldn't be loaded; see the server log"})
+                if method == "GET" and path == "/api/import/log":
+                    data, name, ctype = api.import_log((q.get("fmt") or ["txt"])[0])
+                    return self._send(200, data, ctype, extra={"Content-Disposition": f'attachment; filename="{name}"'})
+                self._send(200, self._dispatch(api, method, path, q, body))
             except ApiError as e:
                 self._send(e.code, {"error": e.message})
             except json.JSONDecodeError:
                 self._send(400, {"error": "bad json"})
             except Exception as e:
-                api.log.error("Web request failed: %s", e)
+                server_log.error("Web request failed: %s", e)
                 self._send(500, {"error": "internal error"})
 
         def _icon(self, key):
             """Custom service icons: put <service>.svg/.png/.webp/.jpg in the data volume's icons/ folder."""
             # Only fixed names are ever looked up: the path comes from this table, never from the request text.
-            names = {k: k for k in ["hardcover", APP_ICON_KEY] + [p.key for p in api.e.providers]}
+            names = {k: k for k in ("hardcover", APP_ICON_KEY) + SERVICE_KEYS}
             safe = names.get(key)
             if safe:
                 for ext, ctype in ICON_TYPES.items():
@@ -447,7 +546,7 @@ def make_handler(api, cfg):
                 return self._send(200, FALLBACK_ICON, "image/svg+xml")
             self._send(404, {"error": "no custom icon"})
 
-        def _dispatch(self, method, path, q, body):
+        def _dispatch(self, api, method, path, q, body):
             if method == "GET":
                 if path == "/api/status": return api.status()
                 if path == "/api/books": return api.books(q)
@@ -493,13 +592,15 @@ def make_handler(api, cfg):
         def do_GET(self): self._route("GET")
         def do_POST(self): self._route("POST")
 
+    Handler.apis = apis
     return Handler
 
 
 class WebServer:
-    def __init__(self, engine, config, log, host="0.0.0.0"):
-        self.api = Api(engine, config, log)
-        self.httpd = ThreadingHTTPServer((host, int(config["web"]["port"])), make_handler(self.api, config))
+    def __init__(self, hub, config, log, host="0.0.0.0"):
+        self.hub = hub
+        self.handler = make_handler(hub, config, log)
+        self.httpd = ThreadingHTTPServer((host, int(config["web"]["port"])), self.handler)
         self.httpd.daemon_threads = True
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True, name="web")
 

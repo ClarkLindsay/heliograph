@@ -93,7 +93,9 @@ def _coerce(default, raw):
 
 
 class Config:
-    def __init__(self, path=CONFIG_PATH, crypto=None):
+    def __init__(self, path=CONFIG_PATH, crypto=None, env=True):
+        """env: apply HELIOGRAPH__<section>__<key> environment overrides. They belong to whoever set up the
+        container, so with several users only the admin's config (and the server's own) reads them."""
         self.path = Path(path)
         try:
             self.crypto = crypto if crypto is not None else Crypto()
@@ -103,7 +105,7 @@ class Config:
         if self.path.exists():
             _merge(self.data, json.loads(self.path.read_text(encoding="utf-8")))
         self._env = set()          # settings supplied via environment; never written back to the file
-        for name, raw in os.environ.items():
+        for name, raw in (os.environ.items() if env else ()):
             up = name.upper()
             if not up.startswith(ENV_PREFIX):
                 continue

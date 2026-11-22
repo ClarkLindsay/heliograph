@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Heliograph</title>
+<link rel="icon" href="/icons/heliograph">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="apple-mobile-web-app-title" content="Heliograph">
+<meta name="theme-color" content="#0f4c5c">
+<style>
+:root{--bg:#f4f6f6;--fg:#1c1c1e;--mut:#5f6b6e;--line:#d8dfe0;--card:#ffffff;--acc:#0f4c5c;--accfg:#ffffff;--sun:#f5b301;--bad:#c62828;--ok:#1f8a4c}
+@media (prefers-color-scheme:dark){:root{--bg:#121617;--fg:#ececef;--mut:#9aa6a9;--line:#2a3335;--card:#1b2123;--acc:#5fb3c4;--accfg:#0d1a1d;--bad:#ff7a70;--ok:#4cc27c}}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:var(--bg);color:var(--fg);font:15px/1.45 system-ui,sans-serif;display:flex;align-items:flex-start;justify-content:center;
+ padding:max(48px,env(safe-area-inset-top,0px)) max(16px,env(safe-area-inset-right,0px)) 32px max(16px,env(safe-area-inset-left,0px))}
+.box{width:100%;max-width:380px;display:grid;gap:18px}
+.brand{display:flex;align-items:center;gap:12px}.brand img{border-radius:12px}.brand h1{margin:0;font-size:22px}.brand p{margin:0;color:var(--mut);font-size:13px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px;display:grid;gap:12px}
+.tabs{display:flex;gap:4px;background:var(--bg);border:1px solid var(--line);border-radius:9px;padding:3px}
+.tabs button{flex:1;border:0;background:none;color:var(--mut);font:inherit;padding:7px;border-radius:7px;cursor:pointer}.tabs button.on{background:var(--card);color:var(--fg);box-shadow:0 1px 2px #0002}
+label{display:grid;gap:4px;font-size:13px;color:var(--mut)}
+input{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:8px;padding:9px 10px;width:100%}
+input:focus-visible,button:focus-visible{outline:2px solid var(--sun);outline-offset:1px}
+.go{font:inherit;font-weight:600;background:var(--acc);color:var(--accfg);border:0;border-radius:8px;padding:10px;cursor:pointer}.go:disabled{opacity:.6}
+.msg{font-size:14px;padding:9px 11px;border-radius:8px;background:var(--bg)}.bad{color:var(--bad)}.note{color:var(--mut);font-size:13px;margin:0}
+[hidden]{display:none!important}
+</style></head><body>
+<div class="box">
+ <div class="brand"><img src="/icons/heliograph" width="48" height="48" alt=""><div><h1>Heliograph</h1><p>Hardcover reading sync</p></div></div>
+ <form class="card" id="f" novalidate>
+  <div class="tabs" id="tabs"><button type="button" id="t-in" class="on">Sign in</button><button type="button" id="t-up">Create account</button></div>
+  <p class="note" id="intro" hidden></p>
+  <label>Username<input id="u" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>
+  <label>Password<input id="p" name="password" type="password" autocomplete="current-password" required></label>
+  <label id="p2w" hidden>Repeat password<input id="p2" type="password" autocomplete="new-password"></label>
+  <label id="cw" hidden><span id="cl">Invite code</span><input id="c" autocomplete="off" autocapitalize="none" spellcheck="false"></label>
+  <div id="out" role="status"></div>
+  <button class="go" id="go" type="submit">Sign in</button>
+ </form>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+let mode='in',st={};
+async function post(path,body){const r=await fetch(path,{method:'POST',headers:{'X-Requested-With':'heliograph-ui','Content-Type':'application/json'},body:JSON.stringify(body)});
+ let j={};try{j=await r.json()}catch(e){}if(!r.ok)throw new Error(j.error||('HTTP '+r.status));return j}
+function say(t,bad){$('out').innerHTML='';if(!t)return;const d=document.createElement('div');d.className='msg'+(bad?' bad':'');d.textContent=t;$('out').append(d)}
+function setMode(m){mode=m;$('t-in').classList.toggle('on',m==='in');$('t-up').classList.toggle('on',m==='up');
+ const up=m==='up';$('p2w').hidden=!up;$('p').autocomplete=up?'new-password':'current-password';$('go').textContent=up?(st.first_run?'Create admin account':'Create account'):'Sign in';
+ const needCode=up&&!(st.first_run&&st.local);$('cw').hidden=!needCode;$('cl').textContent=st.first_run?'Setup code (your current web password)':'Invite code';
+ const intro=up&&st.first_run?(st.existing_data?'This is the first account: it becomes the admin and gets your existing Heliograph settings and library.':'This is the first account: it becomes the admin.')
+  +(st.local?'':st.setup_code?' To prove you own this install, enter the web password you used before as the setup code.':' Open Heliograph at http://localhost:<port> on the machine running it to create it.'):up?'You need an invite code from the person who runs this Heliograph.':'';
+ $('intro').textContent=intro;$('intro').hidden=!intro;say('')}
+$('t-in').onclick=()=>setMode('in');$('t-up').onclick=()=>setMode('up');
+$('f').addEventListener('submit',async e=>{e.preventDefault();const u=$('u').value.trim(),p=$('p').value;
+ if(!u||!p)return say('Enter a username and password.',true);
+ if(mode==='up'&&p!==$('p2').value)return say('The two passwords don’t match.',true);
+ $('go').disabled=true;say(mode==='up'?'Creating your account…':'Signing in…');
+ try{await post(mode==='up'?'/auth/register':'/auth/login',{username:u,password:p,code:$('c').value});location.replace('/')}
+ catch(err){say(err.message,true);$('go').disabled=false}});
+fetch('/auth/state').then(r=>r.json()).then(s=>{st=s;if(s.user){location.replace('/');return}setMode(s.first_run?'up':'in');if(s.first_run)$('t-in').hidden=true})
+ .catch(()=>setMode('in'));
+</script>
+</body></html>

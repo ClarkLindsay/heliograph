@@ -18,7 +18,7 @@ services:
       # Web UI at http://localhost:8080 - this PC only.
       # Port 8080 already in use? Set HELIOGRAPH_PORT in a .env file next to this one (e.g. HELIOGRAPH_PORT=8090);
       # see README > "Changing the web UI port". The container side (:8080) stays the same.
-      # Remove "127.0.0.1:" to expose it on your network, and then set HELIOGRAPH__web__password below.
+      # Remove "127.0.0.1:" to expose it on your network. Everyone signs in with their own account (README > Accounts).
       - "127.0.0.1:${HELIOGRAPH_PORT:-8080}:8080"
     # Lets the container reach services published on the host, e.g. the Goodreads cookie refresher
     # (Docker Desktop provides this name already; the extra_hosts line makes the same file work on Linux).
@@ -56,7 +56,8 @@ services:
       # HELIOGRAPH__librarything__password: ""
       # HELIOGRAPH__librarything__read_collection_id: "0"       # 0 = "Your library"; 5 = "Read but unowned"
       # HELIOGRAPH__web__password: "<paste output of: docker compose run --rm heliograph python -m heliograph --hash-password>"
-      #                                                      # optional Basic-auth password for the web UI (any username)
+      #                       # optional setup code: lets you create the first (admin) account from another device
+      # HELIOGRAPH__web__allowed_hosts: "books.example.com"   # host names treated like localhost for the first account
       # HELIOGRAPH__web__enabled: "true"
       # HELIOGRAPH__common__poll_interval_minutes: "5"
       # HELIOGRAPH__common__initial_sync: "baseline"            # or import_all

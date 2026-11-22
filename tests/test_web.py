@@ -5,6 +5,7 @@ from heliograph.engine import Engine
 from heliograph.hardcover import Book
 from heliograph.providers.base import Provider, Match
 from heliograph.state import State
+from heliograph.hub import Hub, Runtime, OWNER
 from heliograph.web import WebServer, SPEC
 
 H = {"X-Requested-With": "heliograph-ui", "Content-Type": "application/json"}
@@ -35,40 +36,75 @@ class Fake(Provider):
     def set_rating(self, r, v, b): self.calls.append(("rating", r, v))
 
 
-def call(srv, method, path, body=None, headers=None, host=None, creds=None):
+def call(srv, method, path, body=None, headers=None, host=None, cookie=None, raw_resp=False):
+    """cookie=None sends the test's signed-in session (srv.cookie); cookie="" sends none."""
     h = dict(headers if headers is not None else (H if method == "POST" else {}))
     if host: h["Host"] = host
-    if creds: h["Authorization"] = "Basic " + base64.b64encode(f"u:{creds}".encode()).decode()
+    token = getattr(srv, "cookie", "") if cookie is None else cookie
+    if token: h["Cookie"] = f"hg_session={token}"
     req = urllib.request.Request(f"http://127.0.0.1:{srv.port}{path}", method=method, headers=h,
                                  data=json.dumps(body).encode() if body is not None else (b"{}" if method == "POST" else None))
     try:
         with urllib.request.urlopen(req) as r:
-            raw = r.read(); return r.status, (json.loads(raw) if r.headers["Content-Type"].startswith("application/json") else raw)
+            raw = r.read()
+            if raw_resp: return r.status, r.headers
+            return r.status, (json.loads(raw) if r.headers["Content-Type"].startswith("application/json") else raw)
     except urllib.error.HTTPError as e:
+        if raw_resp: return e.code, e.headers
         return e.code, json.loads(e.read() or b"{}")
 
 
-def setup(tmp, password=""):
-    cfg = Config(os.path.join(tmp, "c.json"))
+def session_of(headers):
+    c = headers.get("Set-Cookie") or ""
+    return c.split("hg_session=", 1)[1].split(";", 1)[0] if "hg_session=" in c else None
+
+
+def fake_runtime(name, folder, tmp, books=None):
+    folder.mkdir(parents=True, exist_ok=True)
+    cfg = Config(folder / "config.json", env=False)
     cfg["goodreads"]["enabled"] = True; cfg["common"]["initial_sync"] = "baseline"; cfg["common"]["min_update_interval_seconds"] = 0
-    cfg["web"].update(port=0, password=password)
-    log, hc = logging.getLogger("t"), FakeHC()
+    log, hc = logging.getLogger("t." + name), FakeHC()
     p = Fake(cfg, log)
-    eng = Engine(cfg, [p], State(os.path.join(tmp, "s.db")), log, hardcover=hc)
-    hc.lib[1] = Book(1, "Dune", authors=["Frank Herbert"], status="reading", pages=50, total_pages=400)
-    hc.lib[2] = Book(2, "Emma", authors=["Jane Austen"], status="read", rating=4)
-    srv = WebServer(eng, cfg, log, host="127.0.0.1"); srv.start()
-    return cfg, hc, p, eng, srv
+    eng = Engine(cfg, [p], State(folder / "state.db"), log, hardcover=hc, data_dir=folder)
+    for b in books or []:
+        hc.lib[b.ub_id] = b
+    rt = Runtime(name, folder, cfg, eng.state, eng, log, folder / "heliograph.log")
+    rt.hc, rt.p = hc, p
+    return rt
+
+
+def make_hub(tmp, setup_password="", books=None):
+    server = Config(os.path.join(tmp, "server.json"), env=False)
+    server["web"].update(port=0, password=setup_password)
+    log = logging.getLogger("t.server")
+    hub = Hub(server, log, data_dir=tmp, heartbeat=None,
+              factory=lambda name, folder, admin: fake_runtime(name, folder, tmp, books(name) if books else None))
+    hub.start(run_loops=False)
+    srv = WebServer(hub, server, log, host="127.0.0.1"); srv.start()
+    return hub, srv
+
+
+def setup(tmp):
+    """One signed-in user ('alice', the admin) with two books; returns her config, fake Hardcover, provider, engine."""
+    lib = lambda name: [Book(1, "Dune", authors=["Frank Herbert"], status="reading", pages=50, total_pages=400),
+                        Book(2, "Emma", authors=["Jane Austen"], status="read", rating=4)] if name == "alice" else []
+    hub, srv = make_hub(tmp, books=lib)
+    hub.register("alice", "alice-password", local=True)
+    srv.cookie = hub.accounts.new_session("alice")
+    rt = hub.runtime("alice")
+    srv.cfg_path = rt.dir / "config.json"
+    return rt.config, rt.hc, rt.p, rt.engine, srv
 
 
 def test_pages_security_and_status():
     with tempfile.TemporaryDirectory() as tmp:
         cfg, hc, p, eng, srv = setup(tmp)
         try:
-            code, body = call(srv, "GET", "/"); assert code == 200 and b"Heliograph" in body
-            assert call(srv, "GET", "/api/status", host="evil.example.com")[0] == 403           # DNS-rebinding guard
-            assert call(srv, "GET", "/api/status", host="localhost:8080")[0] == 200
+            code, body = call(srv, "GET", "/"); assert code == 200 and b"Heliograph" in body and b"/api/me" in body   # the app
+            code, body = call(srv, "GET", "/", cookie=""); assert code == 200 and b"/auth/login" in body            # sign-in page
+            assert call(srv, "GET", "/api/status", cookie="")[0] == 401 and call(srv, "GET", "/api/status", cookie="forged")[0] == 401
             assert call(srv, "POST", "/api/sync", headers={"Content-Type": "application/json"})[0] == 403   # no CSRF header
+            assert call(srv, "GET", "/api/me")[1] == {"user": "alice", "admin": True}
             eng.run_once()
             code, st = call(srv, "GET", "/api/status")
             assert st["books"] == 2 and st["examined"] == 2 and st["services"][0]["key"] == "goodreads"
@@ -90,15 +126,98 @@ def test_pages_security_and_status():
             srv.stop()
 
 
-def test_password_protects_everything():
+def test_accounts_invites_and_isolation():
+    books = lambda name: {"alice": [Book(1, "Dune", status="reading")], "bob": [Book(7, "Bob's book", status="read")]}.get(name, [])
     with tempfile.TemporaryDirectory() as tmp:
-        cfg, hc, p, eng, srv = setup(tmp, password="s3cret")
+        hub, srv = make_hub(tmp, books=books)
         try:
-            assert call(srv, "GET", "/")[0] == 401 and call(srv, "GET", "/api/status")[0] == 401
-            assert call(srv, "GET", "/api/status", creds="wrong")[0] == 401
-            assert call(srv, "GET", "/api/status", creds="s3cret", host="my-nas.lan")[0] == 200   # password replaces the host check
+            # first account: from this machine (Host 127.0.0.1) it becomes the admin
+            assert call(srv, "GET", "/auth/state", cookie="")[1]["first_run"] is True
+            code, hdr = call(srv, "POST", "/auth/register", {"username": "Alice", "password": "alice-password"}, cookie="", raw_resp=True)
+            assert code == 200 and "HttpOnly" in hdr["Set-Cookie"] and "SameSite=Lax" in hdr["Set-Cookie"]
+            alice = session_of(hdr)
+            assert call(srv, "GET", "/api/me", cookie=alice)[1] == {"user": "alice", "admin": True}
+            # later sign-ups need an invite code, used once
+            assert call(srv, "POST", "/auth/register", {"username": "bob", "password": "bob-password"}, cookie="")[0] == 400
+            code, r = call(srv, "POST", "/api/admin/invite", {}, cookie=alice)
+            assert code == 200 and len(r["code"]) >= 10 and len(r["invites"]) == 1 and r["code"] not in json.dumps(r["invites"])
+            assert call(srv, "POST", "/auth/register", {"username": "bob", "password": "short", "code": r["code"]}, cookie="")[0] == 400
+            code, hdr = call(srv, "POST", "/auth/register", {"username": "bob", "password": "bob-password", "code": r["code"]},
+                             cookie="", raw_resp=True)
+            assert code == 200; bob = session_of(hdr)
+            assert call(srv, "POST", "/auth/register", {"username": "carol", "password": "carol-password", "code": r["code"]}, cookie="")[0] == 400
+            # each user sees only their own library, settings and log
+            hub.runtime("alice").engine.refresh_library(); hub.runtime("bob").engine.refresh_library()
+            assert [b["title"] for b in call(srv, "GET", "/api/books", cookie=alice)[1]["books"]] == ["Dune"]
+            assert [b["title"] for b in call(srv, "GET", "/api/books", cookie=bob)[1]["books"]] == ["Bob's book"]
+            assert call(srv, "GET", "/api/book/1", cookie=bob)[0] == 404
+            call(srv, "POST", "/api/settings", {"common": {"poll_interval_minutes": 9}}, cookie=bob)
+            assert hub.runtime("bob").config["common"]["poll_interval_minutes"] == 9 and hub.runtime("alice").config["common"]["poll_interval_minutes"] == 5
+            assert (hub.users_dir / "bob" / "config.json").exists() and (hub.users_dir / "alice" / "state.db").exists()
+            # only the admin manages users
+            assert call(srv, "GET", "/api/admin/users", cookie=bob)[0] == 403 and call(srv, "POST", "/api/admin/invite", {}, cookie=bob)[0] == 403
+            assert [u["name"] for u in call(srv, "GET", "/api/admin/users", cookie=alice)[1]["users"]] == ["alice", "bob"]
+            # sign-in: wrong password, throttling, sign-out
+            assert call(srv, "POST", "/auth/login", {"username": "bob", "password": "nope"}, cookie="")[0] == 401
+            assert call(srv, "POST", "/auth/login", {"username": "nobody", "password": "nope"}, cookie="")[0] == 401
+            code, hdr = call(srv, "POST", "/auth/login", {"username": "BOB ", "password": "bob-password"}, cookie="", raw_resp=True)
+            assert code == 200; bob2 = session_of(hdr)
+            for _ in range(5): call(srv, "POST", "/auth/login", {"username": "alice", "password": "guess"}, cookie="")
+            assert call(srv, "POST", "/auth/login", {"username": "alice", "password": "alice-password"}, cookie="")[0] == 429
+            assert call(srv, "POST", "/auth/logout", {}, cookie=bob2)[0] == 200 and call(srv, "GET", "/api/me", cookie=bob2)[0] == 401
+            # changing your password signs out your other sessions
+            assert call(srv, "POST", "/api/account/password", {"current": "wrong", "new": "bob-password-2"}, cookie=bob)[0] == 400
+            code, hdr = call(srv, "POST", "/api/account/password", {"current": "bob-password", "new": "bob-password-2"}, cookie=bob, raw_resp=True)
+            assert code == 200 and call(srv, "GET", "/api/me", cookie=bob)[0] == 401 and call(srv, "GET", "/api/me", cookie=session_of(hdr))[0] == 200
+            # deleting a user signs them out and keeps their folder aside
+            assert call(srv, "POST", "/api/admin/user/delete", {"name": "alice"}, cookie=alice)[0] == 400       # not yourself
+            assert call(srv, "POST", "/api/admin/user/delete", {"name": "bob"}, cookie=alice)[0] == 200
+            assert call(srv, "GET", "/api/me", cookie=session_of(hdr))[0] == 401 and hub.runtime("bob") is None
+            assert not (hub.users_dir / "bob").exists() and any(p.name.startswith(".deleted-bob-") for p in hub.users_dir.iterdir())
+            assert "alice-password" not in open(os.path.join(tmp, "users.json")).read()
         finally:
             srv.stop()
+
+
+def test_first_account_needs_this_machine_or_the_setup_code():
+    from heliograph.crypto import hash_password
+    with tempfile.TemporaryDirectory() as tmp:
+        hub, srv = make_hub(tmp, setup_password=hash_password("old-web-password"))
+        try:
+            st = call(srv, "GET", "/auth/state", cookie="", host="books.example.com")[1]
+            assert st["first_run"] and st["setup_code"] and not st["local"]
+            body = {"username": "me", "password": "a-long-password"}
+            assert call(srv, "POST", "/auth/register", body, cookie="", host="books.example.com")[0] == 400       # from outside
+            assert call(srv, "POST", "/auth/register", dict(body, code="guess"), cookie="", host="books.example.com")[0] == 400
+            code, r = call(srv, "POST", "/auth/register", dict(body, code="old-web-password"), cookie="", host="books.example.com")
+            assert code == 200 and r == {"user": "me", "admin": True}
+            assert call(srv, "GET", "/auth/state", cookie="")[1]["first_run"] is False
+        finally:
+            srv.stop()
+
+
+def test_existing_data_moves_to_the_first_account():
+    """A pre-0.4 install (config.json + state.db in the data folder) is kept and handed to the first account."""
+    from heliograph.hub import default_factory
+    with tempfile.TemporaryDirectory() as tmp:
+        c = Config(os.path.join(tmp, "config.json")); c["common"]["poll_interval_minutes"] = 7; c.save()
+        s = State(os.path.join(tmp, "state.db")); s.save_link(1, "goodreads", remote_id="77"); s.db.close()
+        server = Config(os.path.join(tmp, "server.json"), env=False)
+        hub = Hub(server, logging.getLogger("t.mig"), data_dir=tmp, heartbeat=None, factory=default_factory)
+        hub.start(run_loops=False)
+        assert not os.path.exists(os.path.join(tmp, "config.json")) and hub.runtime(OWNER) is not None
+        assert os.path.exists(os.path.join(tmp, "backup-before-0.4", "state.db"))
+        hub.register("clark", "clark-password", local=True)
+        rt = hub.runtime("clark")
+        assert rt.config["common"]["poll_interval_minutes"] == 7 and rt.state.link(1, "goodreads")["remote_id"] == "77"
+        assert hub.runtime(OWNER) is None and not (hub.users_dir / OWNER).exists()
+        hub2 = Hub(server, logging.getLogger("t.mig2"), data_dir=tmp, heartbeat=None, factory=default_factory)
+        hub2.start(run_loops=False)                                  # restarting changes nothing
+        assert hub2.runtime("clark").state.link(1, "goodreads")["remote_id"] == "77" and hub2.runtime(OWNER) is None
+        for h in (hub, hub2):
+            for r in h.runtimes.values():
+                r.state.db.close()
+                for hd in list(r.log.handlers): hd.close(); r.log.removeHandler(hd)
 
 
 def test_link_flow():
@@ -160,7 +279,7 @@ def test_settings_roundtrip():
                                                            "hardcover": {"token": ""}, "goodreads": {"cookie_refresh_url": " http://r:5080 "}})
             assert code == 200 and r["saved"] == 3 and cfg["common"]["poll_interval_minutes"] == 2
             assert cfg["hardcover"]["token"] == "TOPSECRET" and cfg["goodreads"]["cookie_refresh_url"] == "http://r:5080"
-            assert json.load(open(os.path.join(tmp, "c.json")))["common"]["progress_mode"] == "percent"     # persisted
+            assert json.load(open(srv.cfg_path))["common"]["progress_mode"] == "percent"     # persisted
             call(srv, "POST", "/api/settings", {"fable": {"email": "new@b.c"}})
             assert cfg["fable"]["id_token"] == "" and cfg["fable"]["refresh_token"] == ""            # new login forced
             call(srv, "POST", "/api/settings", {"hardcover": {"token": "__clear__"}}); assert cfg["hardcover"]["token"] == ""
@@ -171,7 +290,7 @@ def test_settings_roundtrip():
             assert call(srv, "POST", "/api/settings", {"fable": {"id_token": "x"}})[0] == 400          # internal fields aren't editable
             os.environ["HELIOGRAPH__common__sync_ratings"] = "false"
             try:
-                cfg2 = Config(os.path.join(tmp, "c.json")); srv.api.cfg = cfg2
+                cfg2 = Config(srv.cfg_path); srv.handler.apis["alice"].cfg = cfg2
                 code, r = call(srv, "POST", "/api/settings", {"common": {"sync_ratings": True}})
                 assert r["saved"] == 0 and "environment" in r["notes"][0] and cfg2["common"]["sync_ratings"] is False
             finally:
@@ -250,32 +369,30 @@ def test_push_all_and_import():
             srv.stop()
 
 
-def test_icons_and_hashed_password():
+def test_icons():
     import heliograph.web as web
-    from heliograph.crypto import hash_password
     with tempfile.TemporaryDirectory() as tmp:
-        cfg, hc, p, eng, srv = setup(tmp, password=hash_password("pw1"))
+        cfg, hc, p, eng, srv = setup(tmp)
         old = web.APP_DIR; web.APP_DIR = type(old)(tmp)
         try:
+            # icons are public (the sign-in page and the Home Screen need them before you sign in)
             os.makedirs(os.path.join(tmp, "icons")); open(os.path.join(tmp, "icons", "goodreads.svg"), "w").write("<svg/>")
-            assert call(srv, "GET", "/icons/goodreads", creds="wrong")[0] == 401
-            code, body = call(srv, "GET", "/icons/goodreads", creds="pw1"); assert code == 200 and body == b"<svg/>"
-            assert call(srv, "GET", "/icons/storygraph", creds="pw1")[0] == 404
+            code, body = call(srv, "GET", "/icons/goodreads", cookie=""); assert code == 200 and body == b"<svg/>"
+            assert call(srv, "GET", "/icons/storygraph")[0] == 404
             # the app's own icon: built-in fallback until icons/heliograph.png exists, then that file (also served as /favicon.ico)
-            code, body = call(srv, "GET", "/favicon.ico", creds="pw1"); assert code == 200 and b"<svg" in body
+            code, body = call(srv, "GET", "/favicon.ico", cookie=""); assert code == 200 and b"<svg" in body
             open(os.path.join(tmp, "icons", "heliograph.png"), "wb").write(b"\x89PNG fake")
-            code, body = call(srv, "GET", "/icons/heliograph", creds="pw1"); assert code == 200 and body.startswith(b"\x89PNG")
-            assert call(srv, "GET", "/favicon.ico", creds="pw1")[1].startswith(b"\x89PNG") and call(srv, "GET", "/icons/..%2Fc", creds="pw1")[0] == 404
-            # Home Screen icons: no password needed (iOS doesn't send it); nothing else opens up
-            code, body = call(srv, "GET", "/apple-touch-icon.png")
+            code, body = call(srv, "GET", "/icons/heliograph"); assert code == 200 and body.startswith(b"\x89PNG")
+            assert call(srv, "GET", "/favicon.ico")[1].startswith(b"\x89PNG") and call(srv, "GET", "/icons/..%2Fc")[0] == 404
+            # Home Screen icons, without a session
+            code, body = call(srv, "GET", "/apple-touch-icon.png", cookie="")
             assert code == 200 and body.startswith(b"\x89PNG")
-            assert call(srv, "GET", "/apple-touch-icon-precomposed.png")[0] == 200 and call(srv, "GET", "/icon-512.png")[0] == 200
-            code, body = call(srv, "GET", "/manifest.webmanifest")
+            assert call(srv, "GET", "/apple-touch-icon-precomposed.png", cookie="")[0] == 200 and call(srv, "GET", "/icon-512.png", cookie="")[0] == 200
+            code, body = call(srv, "GET", "/manifest.webmanifest", cookie="")
             assert code == 200 and json.loads(body)["icons"][0]["src"] == "/apple-touch-icon.png"
-            assert call(srv, "GET", "/")[0] == 401 and call(srv, "GET", "/api/status")[0] == 401 and call(srv, "GET", "/favicon.ico")[0] == 401
-            assert call(srv, "POST", "/apple-touch-icon.png", {})[0] == 401
+            assert call(srv, "GET", "/api/status", cookie="")[0] == 401
             open(os.path.join(tmp, "icons", "evil.svg"), "w").write("<svg/>")     # only known service names are served
-            assert call(srv, "GET", "/icons/evil", creds="pw1")[0] == 404 and call(srv, "GET", "/icons/..%2Ficons%2Fgoodreads", creds="pw1")[0] == 404
+            assert call(srv, "GET", "/icons/evil")[0] == 404 and call(srv, "GET", "/icons/..%2Ficons%2Fgoodreads")[0] == 404
         finally:
             web.APP_DIR = old; srv.stop()
 
@@ -325,7 +442,9 @@ def test_import_log_flagged_books_and_retry_failed():
 
 
 if __name__ == "__main__":
-    for t in (test_push_all_and_import, test_icons_and_hashed_password, test_pages_security_and_status, test_password_protects_everything, test_link_flow, test_push_respects_sync_settings,
+    for t in (test_push_all_and_import, test_icons, test_pages_security_and_status, test_accounts_invites_and_isolation,
+              test_first_account_needs_this_machine_or_the_setup_code, test_existing_data_moves_to_the_first_account,
+              test_link_flow, test_push_respects_sync_settings,
               test_settings_roundtrip, test_wake_and_refresh, test_old_database_is_upgraded, test_import_log_flagged_books_and_retry_failed):
         try: t()
         except Exception: print("FAILED", t.__name__); raise
