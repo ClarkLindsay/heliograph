@@ -292,6 +292,12 @@ def test_goodreads_finished_sessions_logic():
     for old_start in (None, fin):                                                       # no start, or the same-day placeholder
         out, already, _ = gr.prepare_finished_sessions([{"startedDate": old_start, "endedDate": fin}], "kca://b", fin, 1, start)
         assert out[0]["startedDate"] == start and not already
+    shelved = {"id": "s1", "bookId": "kca://b", "state": "COMPLETED", "startedDate": None, "endedDate": None}
+    out, _, _ = gr.prepare_finished_sessions([shelved], "kca://b", fin, 1, start)        # Goodreads' own undated read
+    assert len(out) == 1 and out[0]["id"] == "s1" and out[0]["endedDate"] == fin and out[0]["startedDate"] == start
+    dated = {"startedDate": None, "endedDate": {"year": 2019, "month": 5, "day": 1}}
+    out, _, _ = gr.prepare_finished_sessions([shelved, dated], "kca://b", fin, 1)       # several reads: a new one is added
+    assert len(out) == 3 and out[0] == shelved
     real = {"year": 2026, "month": 1, "day": 9}                                         # a start you set yourself stays
     assert gr.prepare_finished_sessions([{"startedDate": real, "endedDate": fin}], "kca://b", fin, 1, start)[1] is True
 

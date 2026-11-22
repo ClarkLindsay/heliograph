@@ -347,6 +347,11 @@ def prepare_finished_sessions(sessions, book_id, finished, stamp_ms, started=Non
                 and not ((date_parts(s.get("startedDate")) or (0, 0, 0)) > fd)):
             out[i] = {**s, "endedDate": finished}
             return out, False, None
+    only = sessions[0] if len(sessions) == 1 and isinstance(sessions[0], dict) else None
+    if only and not date_parts(only.get("startedDate")) and not date_parts(only.get("endedDate")):
+        # the undated read Goodreads makes when a book is shelved as Read: date it rather than add a second read
+        out[0] = {**only, "state": "COMPLETED", "startedDate": started, "endedDate": finished}
+        return out, False, None
     if len(sessions) >= 25:
         return None, False, "Goodreads already has the maximum number of reading sessions"
     out.append({"__typename": "ReadingSession", "id": f"new-{stamp_ms}", "bookId": book_id,
