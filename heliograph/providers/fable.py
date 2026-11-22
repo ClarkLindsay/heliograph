@@ -171,6 +171,25 @@ class Fable(Provider):
                            if l.get("type") == "system" and l.get("system_type")}
         return self._lists
 
+    def library(self):
+        out, seen = [], set()
+        for lid in self._list_ids().values():
+            offset = 0
+            while True:
+                code, d = self._req(f"/api/v2/users/{self._uid()}/book_lists/{lid}/books?limit=50&offset={offset}")
+                if code != 200 or not isinstance(d, dict):
+                    raise ProviderError(f"Fable: couldn't read a list (HTTP {code})")
+                for it in d.get("results") or []:
+                    b = it.get("book") or {}
+                    if b.get("id") and b["id"] not in seen:
+                        seen.add(b["id"])
+                        out.append({"id": str(b["id"]), "title": b.get("title") or "", "isbn": b.get("isbn"),
+                                    "authors": [a.get("name") for a in b.get("authors") or [] if a.get("name")]})
+                if not d.get("next"):
+                    break
+                offset += 50
+        return out
+
     CAN_REMOVE = True
 
     def remove_book(self, remote_id):

@@ -217,6 +217,19 @@ class Pagebound(Provider):
             "total_minutes": ub.get("total_minutes"), "shelves": ub.get("shelves") or [], "reading": cur,
         }, page_count
 
+    def library(self):
+        out, page = [], 1
+        while True:
+            code, d = self._req(f"/api/v1/user_books?page={page}")
+            if code != 200 or not isinstance(d, dict):
+                raise ProviderError(f"Pagebound: couldn't read your reading list (HTTP {code})")
+            for ub in d.get("user_books") or []:
+                out.append({"id": f"{ub['book_id']}:{ub['book_uuid']}", "title": (ub.get("title") or "").strip(),
+                            "authors": [ub["author_name"]] if ub.get("author_name") else [], "isbn": None})
+            if page >= (d.get("total_pages") or 1):
+                return out
+            page += 1
+
     def normalize_rating(self, rating):
         return int(float(rating) * 2) / 2
 

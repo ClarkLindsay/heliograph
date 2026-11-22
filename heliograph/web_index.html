@@ -222,7 +222,7 @@ function importTab(){const m=$('#main'),tok=tabToken;let ui=null;fill(m,h('p',{c
    h('div',{class:'row',style:'margin-top:6px'},h('label',{class:'small'},prevBox,' Preview only (don’t change anything)'),h('span',{class:'grow'}),u.retry,u.cancel,u.start),u.out),
    h('div',{class:'prog'},h('div',{class:'bar'},u.bar),u.msg,u.stats,u.recent,u.dl),u.unm,u.fail,
    h('div',{class:'card',style:'margin-top:12px'},h('h3',{},'Linked editions'),
-    h('p',{class:'small mut'},'Finds books linked to an audiobook or another-language edition (see Settings → Preferred edition language) and moves them to the right one. “Check editions” only looks. “Fix them” relinks; on StoryGraph it moves your entry with its dates and rating, elsewhere it sends the current status to the new edition. Works for StoryGraph, Goodreads and Fable: Pagebound and LibraryThing don’t say which edition is which.'),
+    h('p',{class:'small mut'},'First links every book that isn’t linked yet (books recorded at the first run) to the entry already on your shelves there, then finds books on an audiobook or another-language edition (see Settings → Preferred edition language) and moves them to the right one. “Check editions” only looks. “Fix them” relinks; on StoryGraph it moves your entry with its dates and rating, elsewhere it sends the current status to the new edition. Works for StoryGraph, Goodreads and Fable: Pagebound and LibraryThing don’t say which edition is which.'),
     h('div',{class:'row'},h('span',{class:'grow'},u.edMsg),u.edCheck,u.edFix),u.edOut,u.edList));
   setText(u.start,imp.dry?'Start preview':'Start import');return u}
  function list(el,key,items,title,hint,row){const sg=sigOf(items);if(ui.sigs[key]===sg)return;ui.sigs[key]=sg;
@@ -249,7 +249,7 @@ function importTab(){const m=$('#main'),tok=tabToken;let ui=null;fill(m,h('p',{c
   const ej=await api('/api/editions');if(tok!==tabToken)return 8000;
   ui.rmShow(await api('/api/removals'));
   ui.edCheck.disabled=!!ej.running;ui.edFix.disabled=!!ej.running;
-  setText(ui.edMsg,ej.started?`${ej.message||''} · ${ej.done}/${ej.total} checked`:'');
+  setText(ui.edMsg,ej.started?`${ej.message||''} · ${ej.done}/${ej.total} checked`+(ej.linked&&Object.keys(ej.linked).length?' · newly linked: '+Object.entries(ej.linked).map(([k,v])=>k+' '+v).join(', '):''):'');
   const fixable=(ej.items||[]).filter(i=>i.new&&!/^fixed/.test(i.result||''));
   ui.edFix.style.display=!ej.running&&fixable.length?'':'none';setText(ui.edFix,`Fix them (${fixable.length})`);
   list(ui.edList,'e',ej.items||[],'Wrong editions','Linked to an edition you don’t want. The line below each says what was, or would be, done.',

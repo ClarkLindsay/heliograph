@@ -560,6 +560,11 @@ class Goodreads(Provider):
         m = re.search(r"/review/list/(\d+)", getattr(r, "final_url", "") or "")
         return f"{BASE}/user/show/{m.group(1)}" if m else None
 
+    def library(self):
+        from ..dates import gr_author
+        return [{"id": r["id"], "title": r["title"], "authors": [gr_author(a) for a in r["authors"]],
+                 "isbn": (r["isbns"] or [None])[0], "isbns": r["isbns"]} for r in self.reading_dates()]
+
     def reading_dates(self, progress=None):
         """Every book on your Goodreads shelves with its reading sessions, from the 'My Books' table, 100 a page."""
         m = re.search(r"/user/show/(\d+)", self.profile_url() or "")

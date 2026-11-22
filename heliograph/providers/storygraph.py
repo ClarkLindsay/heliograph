@@ -241,6 +241,38 @@ class StoryGraph(Provider):
                 return f"{BASE}/profile/{m.group(1)}"
         return None
 
+    def library(self):
+        prof = self.profile_url()
+        if not prof:
+            raise ProviderError("StoryGraph: couldn't find your profile (signed out?)")
+        name, out, seen = prof.rstrip("/").split("/")[-1], [], set()
+        for shelf in ("currently-reading", "books-read", "to-read", "paused-reading", "did-not-finish"):
+            prev = None
+            for page in range(1, 200):
+                r = self._req("GET", f"/{shelf}/{name}", params={"page": page})
+                if r.status_code == 404:
+                    break
+                if r.status_code != 200:
+                    raise ProviderError(f"StoryGraph: {shelf} page {page} -> HTTP {r.status_code}")
+                panes = BeautifulSoup(r.text, "html.parser").select("div.book-pane[data-book-id]")
+                ids = [p["data-book-id"] for p in panes]
+                if not panes or ids == prev:
+                    break
+                prev = ids
+                for p in panes:
+                    bid = p["data-book-id"]
+                    if bid in seen:
+                        continue
+                    seen.add(bid)
+                    box = p.select_one("div.hidden") or p
+                    h3 = box.select_one("h3 a[href^='/books/']")
+                    text = box.get_text(" | ", strip=True)
+                    isbn = re.search(r"ISBN/UID: \| ([0-9Xx]{10,13})\b", text)
+                    out.append({"id": bid, "title": h3.get_text(" ", strip=True) if h3 else "",
+                                "authors": [a.get_text(" ", strip=True) for a in box.select("a[href^='/authors/']")][:3],
+                                "isbn": isbn.group(1) if isbn else None})
+        return out
+
     def check_edition(self, remote_id):
         info = self._page(remote_id)
         return info["language"], info["format"]

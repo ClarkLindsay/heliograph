@@ -153,6 +153,11 @@ class Provider:
         override it where a smarter query finds more (see Pagebound)."""
         return self.search(" ".join([title] + list(authors)))
 
+    def library(self):
+        """Every entry on your own shelves/lists: [{"id", "title", "authors", "isbn"}], or None if the service
+        can't list them. Used to link books recorded at the first run to the entries you already have."""
+        return None
+
     SEARCHES = 3          # searches find() may run per book when the first finds nothing usable (fewer where costly)
 
     def find(self, book, by_isbn=True, by_title=True, matcher=None):

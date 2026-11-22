@@ -690,9 +690,47 @@ class Engine:
         threading.Thread(target=self._edition_worker, args=(provs, bool(fix)), daemon=True, name="editions").start()
         return self.ed_job
 
+    def link_from_libraries(self, providers=None, job=None):
+        """Books recorded at the first run have no link: read your shelves on each service and link every such book
+        to the entry you already have there (ISBN, else the smart matcher's strict checks). One pass over your
+        shelves per service, instead of a search per book. -> {service label: books linked}"""
+        books, linked = self.state.books(), {}
+        for p in providers or [p for p in self.providers if p.enabled]:
+            need = [b for b in books if not self.state.link(b.ub_id, p.key)["remote_id"]
+                    and not self.state.link(b.ub_id, p.key)["skip"]]
+            if not need:
+                continue
+            if job is not None:
+                job["message"] = f"{p.label}: reading your shelves to find {len(need)} unlinked book(s)…"
+            try:
+                with self.busy(p.key, timeout=600, why="reading your shelves"):
+                    entries = p.library()
+            except Exception as e:
+                self.log.warning("%s: couldn't read your shelves (%s); unlinked books there aren't checked", p.label, e)
+                continue
+            if entries is None:
+                continue
+            taken = {str(l["remote_id"]) for _, l in self.state.links_for_service(p.key) if l["remote_id"]}
+            free = [x for x in entries if str(x["id"]) not in taken]
+            n = 0
+            for b in need:
+                hints = {i for i in (b.isbn13, b.isbn10) if i}
+                by_isbn = [x for x in free if hints & ({x.get("isbn")} | set(x.get("isbns") or ()))]
+                pick = by_isbn[0] if len(by_isbn) == 1 else next(
+                    (r["cand"] for r in self.matcher.evaluate(b.title, b.authors, free, list(hints), b.total_pages) if r["ok"]), None)
+                if pick:
+                    self.state.save_link(b.ub_id, p.key, remote_id=str(pick["id"]), link_failed_at=0, suggest=None,
+                                         error=None, error_at=0)
+                    free.remove(pick); n += 1
+            linked[p.label] = n
+            self.log.info("%s: linked %d of %d unlinked book(s) to the entries already on your shelves", p.label, n, len(need))
+        return linked
+
     def _edition_worker(self, provs, fix):
         job, c = self.ed_job, self.common
         try:
+            job["linked"] = self.link_from_libraries(provs, job)
+            job["message"] = "Checking…" if not fix else "Checking and fixing…"
             todo = []
             for p in provs:
                 for ub_id, link in self.state.links_for_service(p.key):

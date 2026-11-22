@@ -155,8 +155,29 @@ def test_engine_searches_again_suggests_and_learns():
         assert p.matcher is eng.matcher
 
 
+def test_unlinked_books_are_linked_to_the_entries_on_your_shelves():
+    import tempfile
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        eng, p, hc, Book = _engine(tmp, {})
+        p.library = lambda: [{"id": "S1", "title": "The Way of Kings (The Stormlight Archive, #1)", "authors": ["Brandon Sanderson"]},
+                             {"id": "S2", "title": "Skyward 4-Book Boxed Set", "authors": ["Brandon Sanderson"]},
+                             {"id": "S3", "title": "Something", "authors": ["X"], "isbn": "978111"},
+                             {"id": "S4", "title": "Already Linked", "authors": ["Y"]}]
+        for ub, t, a in ((1, "The Way of Kings", "Brandon Sanderson"), (2, "Skyward", "Brandon Sanderson"),
+                         (3, "Another Title Entirely", "Z"), (4, "Not There", "Q")):
+            b = Book(ub, t, authors=[a], status="read", isbn13="978111" if ub == 3 else None)
+            eng.state.upsert_book(b, 0)
+            eng.state.save_link(ub, "storygraph", status="read")              # recorded at the first run, no link
+        eng.state.upsert_book(Book(5, "Mine", authors=["Y"]), 0)
+        eng.state.save_link(5, "storygraph", remote_id="S4")
+        assert eng.link_from_libraries([p]) == {"Svc": 2}
+        got = {ub: eng.state.link(ub, "storygraph")["remote_id"] for ub in (1, 2, 3, 4)}
+        assert got == {1: "S1", 2: None, 3: "S3", 4: None}            # not the box set for Skyward; ISBN wins; S4 taken
+        assert eng.state.link(1, "storygraph")["status"] == "read"   # what was recorded stays
+
+
 ALL = [test_real_cases_from_a_library_cleanup, test_ranking_suggestions_and_reasons, test_learning_from_your_choices_is_bounded,
-       test_helpers, test_engine_searches_again_suggests_and_learns]
+       test_helpers, test_engine_searches_again_suggests_and_learns, test_unlinked_books_are_linked_to_the_entries_on_your_shelves]
 
 if __name__ == "__main__":
     for t in ALL:
