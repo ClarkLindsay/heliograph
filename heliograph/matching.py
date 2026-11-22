@@ -85,11 +85,14 @@ def score(title, authors, cand_title, cand_authors):
     return ts if ts >= MIN_TITLE_SIMILARITY_WITHOUT_AUTHOR else None
 
 
+def ranked(title, authors, candidates):
+    """Confident matches, best first (stable for ties, so the service's own order breaks them)."""
+    scored = [(s, i, c) for i, c in enumerate(candidates)
+              if (s := score(title, authors, c.get("title"), c.get("authors"))) is not None]
+    return [c for s, i, c in sorted(scored, key=lambda t: (-t[0], t[1]))]
+
+
 def best_match(title, authors, candidates):
     """candidates: dicts with at least title and authors (list of names)."""
-    best, best_score = None, None
-    for c in candidates:
-        s = score(title, authors, c.get("title"), c.get("authors"))
-        if s is not None and (best_score is None or s > best_score):
-            best, best_score = c, s
-    return best
+    r = ranked(title, authors, candidates)
+    return r[0] if r else None

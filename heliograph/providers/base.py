@@ -23,8 +23,18 @@ class ProviderError(Exception):
 
 
 class Match:
-    def __init__(self, id, pages=None):
-        self.id, self.pages = str(id), pages
+    """switch_from: your existing entry sits on this other (wrong-language / audio) edition of the same work and
+    should be moved to `id` before writing (the engine does it, never in a preview). note: why this edition."""
+    def __init__(self, id, pages=None, switch_from=None, note=None):
+        self.id, self.pages, self.switch_from, self.note = str(id), pages, switch_from, note
+
+
+AUDIO_WORDS = ("audio", "audible", "mp3", "cd")
+
+
+def is_audio(fmt):
+    f = (fmt or "").lower()
+    return any(w in f for w in AUDIO_WORDS)
 
 
 def mapped_page(book, remote_pages):
@@ -44,6 +54,7 @@ class Provider:
     tracks_progress = True      # False for services that only store status/rating
     state = None                # set by the engine: a tiny kv store for providers that need to remember things
     waiting_on = None           # set while blocked on something slow (e.g. the Goodreads cookie refresher), for UI messages
+    CHECKS_EDITIONS = False     # True when check_edition() can say an edition's language / format
 
     def __init__(self, config, log):
         self.config, self.log = config, log
@@ -58,6 +69,31 @@ class Provider:
 
     def supports(self, status):
         return status in self.SUPPORTED
+
+    # ---- edition preferences (Settings: preferred edition language, avoid audiobook editions)
+    def edition_problem(self, language, fmt, want_audio=False):
+        """Why an edition with this language/format shouldn't be linked, or None if it's fine.
+        want_audio: your Hardcover edition is an audiobook, so audiobook editions are welcome (and preferred).
+        Unknown values ("", None, "Not specified") pass: only a known mismatch is refused."""
+        c = self.config["common"]
+        if is_audio(fmt) and not want_audio and c.get("avoid_audiobooks", True):
+            return f"audiobook edition ({fmt})"
+        want = (c.get("preferred_language") or "").strip().lower()
+        lang = (language or "").strip()
+        if want and lang and lang.lower() not in ("not specified", "unknown") and lang.lower() != want:
+            return f"{lang} edition"
+        return None
+
+    CAN_REMOVE = False          # True when remove_book() is implemented
+
+    def remove_book(self, remote_id):
+        """Take the book off your shelves on this service. -> True if removed, False if it wasn't there.
+        Raises if the service didn't confirm the removal."""
+        raise NotImplementedError
+
+    def check_edition(self, remote_id):
+        """-> (language, format) of a linked edition, for the editions check; None if the service can't tell."""
+        return None
 
     HOME = ""     # the service's homepage (dashboard icon link); override per service with the home_url setting
 
@@ -88,7 +124,7 @@ class Provider:
 
     # --- subclasses implement these
     def check_auth(self) -> str: raise NotImplementedError
-    def lookup_isbn(self, isbn): return None          # -> Match | None
+    def lookup_isbn(self, isbn, want_audio=False): return None          # -> Match | None
     def search(self, query): return []                # -> [{"id","title","authors","pages"}]
     def set_status(self, remote_id, status, book): raise NotImplementedError
     def set_progress(self, remote_id, book, by_pages, remote_pages): raise NotImplementedError
@@ -105,14 +141,18 @@ class Provider:
 
     def find(self, book, by_isbn=True, by_title=True):
         """ISBN first, then scored title+author search, like the plugin's autolink order."""
+        audio = bool(getattr(book, "audio", False))
         if by_isbn:
             for isbn in dict.fromkeys(filter(None, (book.isbn13, book.isbn10))):
-                m = self.lookup_isbn(isbn)
+                m = self.lookup_isbn(isbn, want_audio=audio)
                 if m:
                     return m
         if by_title and book.title.strip():
             cands = self.search_book(book.title, book.authors)
-            best = matching.best_match(book.title, book.authors, cands)
-            if best:
-                return self.finalize(best)
+            hints = [i for i in (book.isbn13, book.isbn10) if i]
+            # best first; finalize() may refuse one (audiobook / other language with no usable edition), then try the next
+            for cand in matching.ranked(book.title, book.authors, cands)[:5]:
+                m = self.finalize(dict(cand, want_isbns=hints, want_audio=audio))
+                if m:
+                    return m
         return None

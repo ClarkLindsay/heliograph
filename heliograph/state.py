@@ -23,12 +23,15 @@ class State:
             primary key(ub_id, service));
           create table if not exists books(
             ub_id integer primary key, title text, authors text, status text, pages integer, total_pages integer,
-            rating real, isbn13 text, isbn10 text, book_id integer, edition_id integer, finished_on text, seen_at real);""")
+            rating real, isbn13 text, isbn10 text, book_id integer, edition_id integer, finished_on text, seen_at real,
+            audio integer default 0);""")
         have = {r[1] for r in self.db.execute("pragma table_info(links)")}      # upgrade databases from older versions
         for name, ddl in (("manual", "integer default 0"), ("skip", "integer default 0"),
                           ("error", "text"), ("error_at", "real default 0")):
             if name not in have:
                 self.db.execute(f"alter table links add column {name} {ddl}")
+        if "audio" not in {r[1] for r in self.db.execute("pragma table_info(books)")}:
+            self.db.execute("alter table books add column audio integer default 0")
         self.db.commit()
 
     # ---- kv
@@ -62,6 +65,13 @@ class State:
                 f"values(?,?,{','.join('?' * len(self.LINK_COLS))})",
                 (ub_id, service, *[cur[c] for c in self.LINK_COLS])); self.db.commit()
 
+    def links_for_service(self, service):
+        """[(ub_id, link)] for every book linked (or recorded) on one service."""
+        with self.lock:
+            rows = self.db.execute(f"select ub_id,{','.join(self.LINK_COLS)} from links where service=? order by ub_id",
+                                   (service,)).fetchall()
+        return [(r[0], self._row(r[1:])) for r in rows]
+
     def links_by_book(self):
         with self.lock:
             rows = self.db.execute(f"select ub_id,service,{','.join(self.LINK_COLS)} from links").fetchall()
@@ -73,29 +83,39 @@ class State:
     # ---- books (local copy of what Hardcover last told us)
     def upsert_book(self, b, now):
         with self.lock:
-            self.db.execute("insert or replace into books values(?,?,?,?,?,?,?,?,?,?,?,?,?)", (
+            self.db.execute(f"insert or replace into books({','.join(self.BOOK_COLS)}) values({','.join('?' * len(self.BOOK_COLS))})", (
                 b.ub_id, b.title, json.dumps(b.authors), b.status, b.pages, b.total_pages, b.rating,
-                b.isbn13, b.isbn10, b.book_id, b.edition_id, b.finished_on, now)); self.db.commit()
+                b.isbn13, b.isbn10, b.book_id, b.edition_id, b.finished_on, now, int(bool(b.audio)))); self.db.commit()
+
+    BOOK_COLS = ("ub_id", "title", "authors", "status", "pages", "total_pages", "rating", "isbn13", "isbn10",
+                 "book_id", "edition_id", "finished_on", "seen_at", "audio")
+    _SELECT_BOOKS = f"select {','.join(BOOK_COLS)} from books"
 
     @staticmethod
     def _book(r):
         return Book(ub_id=r[0], title=r[1] or "", authors=json.loads(r[2] or "[]"), status=r[3], pages=r[4],
                     total_pages=r[5], rating=r[6], isbn13=r[7], isbn10=r[8], book_id=r[9], edition_id=r[10],
-                    finished_on=r[11])
+                    finished_on=r[11], audio=bool(r[13]))
 
     def get_book(self, ub_id):
         with self.lock:
-            r = self.db.execute("select * from books where ub_id=?", (ub_id,)).fetchone()
+            r = self.db.execute(self._SELECT_BOOKS + " where ub_id=?", (ub_id,)).fetchone()
         return self._book(r) if r else None
 
     def books(self, q=None, status=None):
-        sql, args = "select * from books where 1=1", []
+        sql, args = self._SELECT_BOOKS + " where 1=1", []
         if q:
             sql += " and (lower(title) like ? or lower(authors) like ?)"; args += [f"%{q.lower()}%"] * 2
         if status:
             sql += " and status=?"; args.append(status)
         with self.lock:
             return [self._book(r) for r in self.db.execute(sql, args).fetchall()]
+
+    def delete_book(self, ub_id):
+        """Forget a book (and its links): it's no longer in your Hardcover library."""
+        with self.lock:
+            self.db.execute("delete from links where ub_id=?", (ub_id,))
+            self.db.execute("delete from books where ub_id=?", (ub_id,)); self.db.commit()
 
     def book_count(self):
         with self.lock:

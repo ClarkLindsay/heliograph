@@ -1,4 +1,5 @@
-"""Hardcover GraphQL client (official API). Read-only: Hardcover is the source of truth.
+"""Hardcover GraphQL client (official API). Hardcover is the source of truth: syncing only reads it. The one write is
+set_edition(), used by the web UI's edition cleanup when you press Apply.
 Field names follow the ones ShelfSync's own Hardcover provider queries."""
 import time
 from dataclasses import dataclass, field
@@ -7,10 +8,13 @@ import requests
 
 API = "https://api.hardcover.app/v1/graphql"
 STATUS = {1: "want", 2: "reading", 3: "read", 4: "paused", 5: "dnf"}
+AUDIO_FORMAT = 2       # editions.reading_format_id: 1 Read, 2 Listened, 4 Ebook
+FORMAT_NAMES = {1: "Print", 2: "Audiobook", 3: "Print", 4: "Ebook"}
 
 UB_FIELDS = """
   id book_id edition_id status_id rating updated_at
   book { id title pages contributions { contribution author { name } } }
+  edition { reading_format_id }
   user_book_reads(order_by: {id: desc}, limit: 1) { id progress_pages started_at finished_at }
 """
 
@@ -33,6 +37,7 @@ class Book:
     book_id: Optional[int] = None
     edition_id: Optional[int] = None
     finished_on: Optional[str] = None   # YYYY-MM-DD of the latest read
+    audio: bool = False                 # your Hardcover edition is an audiobook ("Listened")
     hydrated: bool = False
 
     @property
@@ -57,6 +62,7 @@ def book_from_ub(ub: dict) -> Book:
         total_pages=book.get("pages") or None, rating=ub.get("rating"),
         book_id=ub.get("book_id"), edition_id=ub.get("edition_id"),
         finished_on=(read.get("finished_at") or None),
+        audio=(ub.get("edition") or {}).get("reading_format_id") == AUDIO_FORMAT,
     )
 
 
@@ -79,8 +85,11 @@ class HardcoverClient:
                 "user-agent": "HardcoverSync/0.3"})
             if r.status_code == 429:               # Hardcover allows ~60 req/min
                 time.sleep(10 * (attempt + 1)); continue
-            if r.status_code in (401, 403):
+            if r.status_code == 401:
                 raise HardcoverError("Hardcover rejected the token (expired or wrong)")
+            if r.status_code == 403:
+                raise HardcoverError("Hardcover refused the request (HTTP 403): the token is wrong or expired, "
+                                     "or the query isn't allowed")
             r.raise_for_status()
             j = r.json()
             if j.get("errors"):
@@ -143,6 +152,80 @@ class HardcoverClient:
                 url = None
             self._ed_cache["covers"][key] = url if isinstance(url, str) and url.startswith("https://") else None
         return self._ed_cache["covers"][key]
+
+    # ---- edition cleanup: the only place Heliograph writes to Hardcover, and only when you press Apply
+    def edition_cleanup(self, language):
+        """Your books whose Hardcover edition is in another language, each with editions of the same book in
+        `language` (most-used first) and a suggestion: the most-used one in the same reading format."""
+        want = (language or "").strip().lower()
+        if not want:
+            return []
+        q = """query($u: Int!, $o: Int!) { user_books(where: {user_id: {_eq: $u}}, order_by: {id: asc}, limit: 100, offset: $o) {
+          id book_id book { title }
+          edition { id title reading_format_id edition_format language { language } } } }"""
+        rows, offset = [], 0
+        while True:
+            page = self._q(q, {"u": self.user_id, "o": offset})["user_books"]
+            rows += page
+            if len(page) < 100:
+                break
+            offset += 100
+        eq = """query($b: Int!, $l: String!) { editions(where: {book_id: {_eq: $b}, language: {language: {_eq: $l}}},
+          order_by: {users_count: desc_nulls_last}, limit: 8) { id title reading_format_id edition_format pages isbn_13 users_count } }"""
+        out = []
+        for r in rows:
+            e = r.get("edition") or {}
+            lang = ((e.get("language") or {}).get("language") or "").strip()
+            if not lang or lang.lower() == want:
+                continue
+            cands = self._q(eq, {"b": r["book_id"], "l": language.strip()})["editions"]
+            same = [c for c in cands if c.get("reading_format_id") == e.get("reading_format_id")]
+            out.append({"id": r["id"], "title": (r.get("book") or {}).get("title") or e.get("title") or "",
+                        "current": {"id": e.get("id"), "title": e.get("title"), "language": lang,
+                                    "format": FORMAT_NAMES.get(e.get("reading_format_id"), ""), "edition_format": e.get("edition_format")},
+                        "candidates": [{"id": c["id"], "title": c.get("title"), "format": FORMAT_NAMES.get(c.get("reading_format_id"), ""),
+                                        "edition_format": c.get("edition_format"), "pages": c.get("pages"),
+                                        "isbn": c.get("isbn_13"), "users": c.get("users_count")} for c in cands],
+                        "suggested": (same or cands or [{}])[0].get("id")})
+        return out
+
+    def set_edition(self, ub_id, edition_id, language=None):
+        """Point one of your Hardcover books (and any reading session on the old edition) at another edition of the
+        same book. Checks the edition really belongs to that book (and is in `language`, if given) before writing."""
+        q = """query($id: Int!, $e: Int!) {
+          user_books(where: {id: {_eq: $id}}) { id user_id book_id edition_id
+            user_book_reads { id edition_id started_at finished_at progress_pages progress_seconds } }
+          editions(where: {id: {_eq: $e}}) { id book_id language { language } } }"""
+        d = self._q(q, {"id": int(ub_id), "e": int(edition_id)})
+        ub, ed = (d.get("user_books") or [None])[0], (d.get("editions") or [None])[0]
+        if not ub or ub.get("user_id") != self.user_id:
+            raise HardcoverError("That book isn't in your Hardcover library")
+        if not ed or ed["book_id"] != ub["book_id"]:
+            raise HardcoverError("That edition belongs to a different book")
+        got = ((ed.get("language") or {}).get("language") or "")
+        if language and got.lower() != language.strip().lower():
+            raise HardcoverError(f"That edition is {got or 'of unknown language'}, not {language}")
+        old = ub["edition_id"]
+        res = self._q("""mutation($id: Int!, $e: Int!) { update_user_book(id: $id, object: {edition_id: $e}) { id error } }""",
+                      {"id": int(ub_id), "e": int(edition_id)})["update_user_book"]
+        if not res or res.get("error"):
+            raise HardcoverError(f"Hardcover refused the change: {(res or {}).get('error') or 'no response'}")
+        moved = 0
+        for rd in ub.get("user_book_reads") or []:
+            if rd.get("edition_id") != old or old == int(edition_id):
+                continue
+            # the update takes the whole record: send the existing dates and progress back unchanged
+            obj = {k: rd.get(k) for k in ("started_at", "finished_at", "progress_pages", "progress_seconds")}
+            obj["edition_id"] = int(edition_id)
+            r2 = self._q("""mutation($id: Int!, $o: DatesReadInput!) { update_user_book_read(id: $id, object: $o) { id error } }""",
+                         {"id": rd["id"], "o": obj})["update_user_book_read"]
+            if not r2 or r2.get("error"):
+                raise HardcoverError(f"Edition changed, but a reading session wasn't: {(r2 or {}).get('error') or 'no response'}")
+            moved += 1
+        for key in (("e", old), ("e", int(edition_id))):
+            self._ed_cache.pop(key, None)
+            self._ed_cache.get("covers", {}).pop(key, None)
+        return {"old": old, "new": int(edition_id), "reads_moved": moved}
 
     def hydrate(self, b: Book):
         """Fill ISBNs and the user's edition page count (one cached query), as the plugin's editions do."""

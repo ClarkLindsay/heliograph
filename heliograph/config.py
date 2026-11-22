@@ -49,6 +49,9 @@ DEFAULTS = {
         "progress_step_pages": 1,
         "link_by_isbn": True,                # plugin: Automatically link by ISBN
         "link_by_title": True,               # plugin: Automatically link by title and author
+        "preferred_language": "English",     # only link editions in this language (blank = any) where the service says
+        "avoid_audiobooks": True,            # never link an audiobook edition where the service says which is which
+        "remove_from_services": "off",       # off | want | all: books you remove from Hardcover come off your services
         "sync_want_to_read": True,
         "sync_paused_dnf": False,
         "sync_ratings": True,

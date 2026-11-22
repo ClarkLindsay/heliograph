@@ -106,6 +106,13 @@ def book_page_pages(html, book_id):
     return None
 
 
+def book_edition_meta(html, book_id):
+    """(language, format) of the edition from the book page's Apollo cache; ("", "") if not shown."""
+    _, node = book_apollo(html, book_id)
+    det = (node or {}).get("details") or {}
+    return ((det.get("language") or {}).get("name") or ""), (det.get("format") or "")
+
+
 def book_apollo(html, book_id):
     query = 'getBookByLegacyId({"legacyId":"%s"})' % book_id
     for script in script_texts(html):
@@ -308,6 +315,7 @@ class Goodreads(Provider):
     key, label = "goodreads", "Goodreads"
     HOME = "https://www.goodreads.com/"
     SUPPORTED = ("want", "reading", "read", "paused", "dnf")   # paused/dnf are write-only on Goodreads
+    CHECKS_EDITIONS = True
 
     def __init__(self, config, log):
         super().__init__(config, log)
@@ -450,12 +458,12 @@ class Goodreads(Provider):
         self._csrf = (tok, time.monotonic())
         return tok
 
-    def _post(self, url, data, custom, params=None, retry_403=True):
+    def _post(self, url, data, custom, params=None, retry_403=True, ok_codes=()):
         r = self._req("POST", url, data=data, params=params, headers={**custom, "X-CSRF-Token": self._csrf_token()})
         if r.status_code == 403 and retry_403:           # plugin: retry once with a fresh session token
             r = self._req("POST", url, data=data, params=params,
                           headers={**custom, "X-CSRF-Token": self._csrf_token(fresh=True)})
-        if not 200 <= r.status_code < 300:
+        if not (200 <= r.status_code < 300 or r.status_code in ok_codes):
             raise ProviderError(f"Goodreads POST {urlparse(url).path} -> HTTP {r.status_code}")
         return r
 
@@ -513,12 +521,29 @@ class Goodreads(Provider):
                      "cover": clean_cover(htmllib.unescape(img.group(1))) if img else None}]
         return parse_search_results(r.text)
 
-    def lookup_isbn(self, isbn):
+    def lookup_isbn(self, isbn, want_audio=False):
         res = self.search(isbn)
-        return Match(res[0]["id"], self._pages(res[0]["id"])) if res else None
+        return self.finalize(dict(res[0], want_audio=want_audio)) if res else None
 
     def finalize(self, cand):
-        return Match(cand["id"], self._pages(cand["id"]))
+        """Refuse audiobook / other-language editions (Settings), so find() moves on to the next candidate."""
+        try:
+            r = self._book_page(cand["id"], keep=True)
+        except (requests.RequestException, ProviderError):
+            return Match(cand["id"], None)
+        if r.status_code != 200:
+            return Match(cand["id"], None)
+        problem = self.edition_problem(*book_edition_meta(r.text, cand["id"]), want_audio=bool(cand.get("want_audio")))
+        if problem:
+            self.log.info("Goodreads: skipping %s for '%s': %s", cand["id"], cand.get("title") or "?", problem)
+            return None
+        return Match(cand["id"], book_page_pages(r.text, cand["id"]))
+
+    def check_edition(self, remote_id):
+        r = self._book_page(remote_id)
+        if r.status_code != 200:
+            raise ProviderError(f"Goodreads book page HTTP {r.status_code}")
+        return book_edition_meta(r.text, remote_id)
 
     def normalize_rating(self, rating):
         return quarter_stars(rating)
@@ -544,6 +569,29 @@ class Goodreads(Provider):
         return state
 
     # ---- writes
+    CAN_REMOVE = True
+
+    def _shelved(self, remote_id):
+        r = self._book_page(remote_id)
+        if r.status_code != 200:
+            raise ProviderError(f"Goodreads book page HTTP {r.status_code}")
+        v = viewer_shelf(r.text, remote_id)
+        if not v["readable"]:
+            raise ProviderError("Couldn't read your shelf from the Goodreads book page")
+        return v["status"]
+
+    def remove_book(self, remote_id):
+        """"Remove from my books": deletes the shelving (and its review/rating) for this book."""
+        if self._shelved(remote_id) is None:
+            return False
+        r = self._post(BASE + f"/review/destroy/{remote_id}", {"_method": "post"}, {
+            **self.XHR, "Referer": f"{BASE}/book/show/{remote_id}", "Accept": "text/javascript, text/html, */*",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"}, retry_403=True, ok_codes=(200, 201, 302, 303))
+        self._page_cache.clear()
+        if self._shelved(remote_id) is not None:
+            raise ProviderError(f"Goodreads didn't confirm the removal (HTTP {r.status_code})")
+        return True
+
     def set_status(self, remote_id, status, book):
         self._post(BASE + "/shelf/add_to_shelf", {"book_id": remote_id, "name": SHELF[status], "a": ""}, {
             **self.XHR, "X-Prototype-Version": "1.7", "Referer": BASE + "/",

@@ -219,6 +219,20 @@ class Pagebound(Provider):
             state["known"].add("finished_on")
         return state
 
+    CAN_REMOVE = True
+
+    def remove_book(self, remote_id):
+        """Delete your reading-list entry for this book."""
+        existing, _ = self._user_book(remote_id)
+        if not existing:
+            return False
+        code, _d = self._req(f"/api/v1/user_books/{existing['id']}", "DELETE")
+        if not (code and (200 <= code < 300)):
+            raise ProviderError(f"Pagebound remove -> HTTP {code}")
+        if self._user_book(remote_id)[0]:
+            raise ProviderError("Pagebound didn't confirm the removal")
+        return True
+
     def set_status(self, remote_id, status, book):
         bid, _ = self._split(remote_id)
         existing, _ = self._user_book(remote_id)

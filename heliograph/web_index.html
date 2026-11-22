@@ -103,14 +103,47 @@ function importTab(){const m=$('#main'),tok=tabToken;let ui=null;fill(m,h('p',{c
   u.cancel=h('button',{class:'btn danger',style:'display:none',onclick:async()=>{try{await api('/api/import/cancel',{});setTimeout(()=>tok===tabToken&&u.refresh(),300)}catch(e){note(u.out,e.message,'bad')}}},'Cancel');
   u.retry=h('button',{class:'btn',style:'display:none',onclick:async()=>{try{await api('/api/import/retry-failed',{});setTimeout(()=>tok===tabToken&&u.refresh(),300)}catch(e){note(u.out,e.message,'bad')}}},'Retry failed');
   const prevBox=chk(()=>imp.dry,v=>{imp.dry=v;setText(u.start,v?'Start preview':'Start import')});
+  u.edMsg=h('div',{class:'small'});u.edList=h('div');u.edOut=h('div');
+  const edGo=fix=>async()=>{if(fix&&!confirm('This relinks the books listed below. On StoryGraph your entry (status, dates, rating) is moved to the right edition; elsewhere the current status is sent to the new edition. Continue?'))return;
+    try{await api('/api/editions',{fix});setTimeout(()=>tok===tabToken&&u.refresh(),300)}catch(e){note(u.edOut,e.message,'bad')}};
+  u.hcOut=h('div');u.hcList=h('div');
+  const hcRow=b=>{const res=h('div',{class:'small'});
+    const opt=c=>h('option',{value:c.id,selected:c.id===b.suggested},[c.format,c.edition_format,c.pages?c.pages+' p':'',c.users?c.users+' readers':'',c.isbn?'ISBN '+c.isbn:'',c.title].filter(Boolean).join(' · '));
+    const sel=b.candidates.length?h('select',{style:'max-width:100%'},...b.candidates.map(opt)):null;
+    const go=h('button',{class:'btn small pri',onclick:async()=>{
+      if(!confirm(`Change “${b.title}” in your Hardcover library to the selected edition? (Its ${b.current.language} edition is replaced; your status, rating and dates stay.)`))return;
+      go.disabled=true;try{await api('/api/hardcover/cleanup',{id:b.id,edition_id:+sel.value});sel.disabled=true;go.remove();note(res,'✓ Changed in Hardcover','ok')}catch(e){go.disabled=false;note(res,e.message,'bad')}}},'Apply');
+    return h('div',{class:'cand'},h('div',{class:'grow'},h('b',{},b.title),
+      h('div',{class:'small mut'},`Now: ${b.current.language} · ${[b.current.format,b.current.edition_format].filter(Boolean).join(' · ')} · “${b.current.title||''}”`),
+      sel||h('div',{class:'small'},`No ${u.hcLang} edition of this book on Hardcover: change it there by hand.`),res),sel?go:null)};
+  u.hcFind=h('button',{class:'btn',onclick:async()=>{u.hcFind.disabled=true;note(u.hcOut,'Looking through your Hardcover library…');
+    try{const r=await api('/api/hardcover/cleanup');u.hcLang=r.language;fill(u.hcOut,null);
+      fill(u.hcList,r.books.length?h('div',{},h('p',{class:'small mut'},`${r.books.length} book(s) with a non-${r.language} edition. The suggested ${r.language} edition (same format, most used) is pre-selected.`),r.books.map(hcRow)):h('div',{class:'msg ok'},`Every book in your Hardcover library uses a ${r.language} edition (or doesn’t say).`))}
+    catch(e){note(u.hcOut,e.message,'bad')}finally{u.hcFind.disabled=false}}},'Find non-English editions');
+  u.rm=h('div');
+  const rmGo=remove=>async()=>{if(remove&&!confirm('Remove these books from your services (per Settings → When you remove a book from Hardcover)?'))return;
+    try{const r=await api('/api/removals',{remove});note(u.rm,remove?`Done: ${r.removed} removed from services, ${r.kept} left in place, ${r.failed} failed (retried later).`:`Forgot ${r.forgotten} book(s); nothing was removed from your services.`,'ok')}catch(e){note(u.rm,e.message,'bad')}};
+  u.rmShow=r=>{const sg=sigOf(r);if(u.rmSig===sg)return;u.rmSig=sg;
+    fill(u.rm,r.books.length?h('div',{class:'card',style:'margin-top:12px;border-color:var(--bad)'},h('h3',{},`Removed from Hardcover (${r.books.length})`),
+      h('p',{class:'small mut'},`These are no longer in your Hardcover library. So many at once can be a glitch or a different account, so nothing was removed yet. “Remove from services” applies your setting (${({off:'off: nothing is removed from services',want:'only Want to Read books',all:'any status'})[r.mode]}); “Just forget them” only drops them from Heliograph.`),
+      r.books.map(b=>h('div',{class:'cand'},h('div',{class:'grow'},h('b',{},b.title),h('div',{class:'small mut'},`${b.authors} · ${LBL[b.status]||b.status||''} · linked on ${b.services.join(', ')||'nothing'}`)))),
+      h('div',{class:'row',style:'margin-top:6px'},h('span',{class:'grow'}),h('button',{class:'btn',onclick:rmGo(false)},'Just forget them'),h('button',{class:'btn danger',onclick:rmGo(true)},'Remove from services'))):null)};
+  u.edCheck=h('button',{class:'btn',onclick:edGo(false)},'Check editions');
+  u.edFix=h('button',{class:'btn pri',style:'display:none',onclick:edGo(true)},'Fix them');
   u.dl.append(h('a',{class:'btn',href:'/api/import/log?fmt=txt',download:''},'Download log (.txt)'),h('a',{class:'btn',href:'/api/import/log?fmt=csv',download:''},'Download results (.csv)'));u.dl.style.display='none';
-  fill(m,h('div',{class:'card'},h('h3',{},'Import library'),
+  fill(m,u.rm,h('div',{class:'card'},h('h3',{},'Import library'),
    h('p',{class:'small mut'},'Re-sends every Hardcover book’s status, progress, rating and finish date to the selected services. It can take a long time (many requests per book) and writes to your accounts, so run a preview first. Books are processed one at a time, so normal syncing keeps working. Failed items are retried automatically (a few times per item, then again at the end); books that can’t be matched are flagged in the Books tab so you can link them by hand.'),
    h('div',{class:'row'},en.length?en.map(x=>box(x.label,imp.services,x.key)):h('span',{class:'mut small'},'No services enabled')),
    h('div',{class:'row',style:'margin-top:4px'},['reading','read','want','paused','dnf'].map(k=>box(LBL[k],imp.statuses,k))),
    h('div',{style:'margin-top:6px'},h('label',{class:'small'},chk(()=>imp.skip,v=>{imp.skip=v}),' Skip books that are already up to date on the service'),h('div',{class:'small mut',style:'margin-left:22px'},'Compares shelf, and where the service lets us read it back: rating (Goodreads*, StoryGraph, Fable) and finish date (Goodreads, Pagebound, LibraryThing). Anything that can’t be read is assumed correct. *when the page exposes it.')),
    h('div',{class:'row',style:'margin-top:6px'},h('label',{class:'small'},prevBox,' Preview only (don’t change anything)'),h('span',{class:'grow'}),u.retry,u.cancel,u.start),u.out),
-   h('div',{class:'prog'},h('div',{class:'bar'},u.bar),u.msg,u.stats,u.recent,u.dl),u.unm,u.fail);
+   h('div',{class:'prog'},h('div',{class:'bar'},u.bar),u.msg,u.stats,u.recent,u.dl),u.unm,u.fail,
+   h('div',{class:'card',style:'margin-top:12px'},h('h3',{},'Linked editions'),
+    h('p',{class:'small mut'},'Finds books linked to an audiobook or another-language edition (see Settings → Preferred edition language) and moves them to the right one. “Check editions” only looks. “Fix them” relinks; on StoryGraph it moves your entry with its dates and rating, elsewhere it sends the current status to the new edition. Works for StoryGraph, Goodreads and Fable: Pagebound and LibraryThing don’t say which edition is which.'),
+    h('div',{class:'row'},h('span',{class:'grow'},u.edMsg),u.edCheck,u.edFix),u.edOut,u.edList),
+   h('div',{class:'card',style:'margin-top:12px'},h('h3',{},'Hardcover editions'),
+    h('p',{class:'small mut'},'Finds books in your Hardcover library whose edition isn’t in your Preferred edition language (Settings), and lets you switch each to an edition in that language. This is the only part of Heliograph that changes Hardcover, and only when you press Apply. Your status, rating and dates stay; reading sessions on the old edition move with it.'),
+    h('div',{class:'row'},h('span',{class:'grow'}),u.hcFind),u.hcOut,u.hcList));
   setText(u.start,imp.dry?'Start preview':'Start import');return u}
  function list(el,key,items,title,hint,row){const sg=sigOf(items);if(ui.sigs[key]===sg)return;ui.sigs[key]=sg;
   fill(el,items.length?h('div',{class:'card',style:'margin-top:12px'},h('h3',{},`${title} (${items.length})`),h('p',{class:'small mut'},hint),items.map(row)):null)}
@@ -129,7 +162,15 @@ function importTab(){const m=$('#main'),tok=tabToken;let ui=null;fill(m,h('p',{c
     i=>h('div',{class:'cand'},h('div',{class:'grow'},h('b',{},i.title),h('div',{class:'small mut'},i.authors+' · '+i.label)),h('button',{class:'btn small pri',onclick:()=>openBook(i.id)},'Link manually…')));
   list(ui.fail,'f',j.failed_items||[],'Failed','These errored even after automatic retries. “Retry failed” runs just these again.',
     i=>h('div',{class:'cand'},h('div',{class:'grow'},h('b',{},i.title),h('div',{class:'small mut'},i.authors+' · '+i.label),h('div',{class:'small',style:'color:var(--bad)'},i.error)),h('button',{class:'btn small',onclick:()=>openBook(i.id)},'Open')));
-  return j.running?2000:8000}
+  const ej=await api('/api/editions');if(tok!==tabToken)return 8000;
+  ui.rmShow(await api('/api/removals'));
+  ui.edCheck.disabled=!!ej.running;ui.edFix.disabled=!!ej.running;
+  setText(ui.edMsg,ej.started?`${ej.message||''} · ${ej.done}/${ej.total} checked`:'');
+  const fixable=(ej.items||[]).filter(i=>i.new&&!/^fixed/.test(i.result||''));
+  ui.edFix.style.display=!ej.running&&fixable.length?'':'none';setText(ui.edFix,`Fix them (${fixable.length})`);
+  list(ui.edList,'e',ej.items||[],'Wrong editions','Linked to an edition you don’t want. The line below each says what was, or would be, done.',
+    i=>h('div',{class:'cand'},h('div',{class:'grow'},h('b',{},i.title),h('div',{class:'small mut'},`${i.authors} · ${i.label} · ${i.problem}`),h('div',{class:'small'},i.result||'')),h('button',{class:'btn small',onclick:()=>openBook(i.id)},'Open')));
+  return (j.running||ej.running)?2000:8000}
  onClose=()=>{if(ui)refresh().catch(()=>{})};
  loop(async()=>{try{return await refresh()}catch(e){if(!ui)fill(m,h('div',{class:'msg bad'},e.message));return 8000}},tok)}
 

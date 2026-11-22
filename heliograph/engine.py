@@ -1,9 +1,9 @@
-import csv, io, logging, threading, time
+import csv, io, json, logging, threading, time
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from .config import APP_DIR
 from .hardcover import HardcoverClient
-from .providers.base import AuthError
+from .providers.base import AuthError, is_audio
 
 RELINK_AFTER = 6 * 3600          # retry an unmatched book every 6h
 IMPORT_RETRY_DELAYS = (10, 30)   # a failed book/service is retried after these many seconds...
@@ -12,7 +12,9 @@ IMPORT_BREAKER = 5               # this many login failures in a row pause a ser
 IMPORT_ROUND_WAIT = 60           # pause before each end-of-import retry round
 IMPORT_ROUNDS = 2
 MAX_CURSOR_HOLD = 7 * 86400      # after this long a failing book no longer pins the incremental window
-UI_WAIT = 15                     # a web UI action waits this long for a busy service before saying so
+REMOVAL_CHECK_EVERY = 30 * 60   # how often the whole library is compared with ours to spot removed books
+REMOVAL_BREAKER = 5              # more books than this gone at once: hold them for you to confirm (glitch / wrong account?)
+UI_WAIT = 15                    # a web UI action waits this long for a busy service before saying so
 CYCLE_WAIT = 120                 # a poll cycle waits this long for a busy service before skipping it this cycle
 
 
@@ -33,6 +35,7 @@ class Engine:
         self.status = {"running": False, "last_start": 0, "last_end": 0, "examined": 0, "pushed": 0,
                        "result": "not run yet", "next_run": 0}
         self.job = {"running": False}
+        self.ed_job = {"running": False}
         self.job_entries, self.job_results = [], []
         self.import_dir = APP_DIR / "imports"
         self._covers = {}
@@ -89,6 +92,10 @@ class Engine:
         try:
             n = self._cycle()
             self.status["result"] = "ok" if not self._problems else f"{self._problems} update(s) failed, will retry"
+            try:
+                self.check_removed()
+            except Exception as e:
+                self.log.error("Checking for books removed from Hardcover failed: %s", e)
             return n
         except Exception as e:
             self.status["result"] = f"error: {e}"
@@ -252,7 +259,9 @@ class Engine:
             return None
         m = p.find(b, c["link_by_isbn"], c["link_by_title"])
         if m:
-            self.log.info("%s: linked '%s' -> %s", p.label, b.title, m.id)
+            self.log.info("%s%s: linked '%s' -> %s%s", "[dry-run] " if dry else "", p.label, b.title, m.id,
+                          f" ({m.note})" if m.note else "")
+            self._move_entry(p, b, m, dry)
             if not dry:
                 self.state.save_link(b.ub_id, p.key, remote_id=m.id, remote_pages=m.pages)
         else:
@@ -262,6 +271,22 @@ class Engine:
                 outcome["nomatch"] = True
             self.log.warning("%s: no confident match for '%s' - will retry in 6h", p.label, b.title)
         return m
+
+    def _move_entry(self, p, b, m, dry):
+        """Your entry sits on an audiobook / other-language edition of the same work: move it (status, dates,
+        rating) to the edition being linked. Never in a preview; a failure leaves the old entry and links anyway."""
+        if not m.switch_from or m.switch_from == m.id:
+            return
+        if dry:
+            self.log.info("[dry-run] %s: would move your entry for '%s' from edition %s to %s",
+                          p.label, b.title, m.switch_from, m.id)
+            return
+        try:
+            p.switch_edition(m.switch_from, m.id)
+            self.log.info("%s: moved your entry for '%s' from edition %s to %s", p.label, b.title, m.switch_from, m.id)
+        except Exception as e:
+            self.log.warning("%s: couldn't move your entry for '%s' from edition %s (%s); the old entry is still there",
+                             p.label, b.title, m.switch_from, e)
 
     # ---- actions used by the web UI (each holds only the lock of the service it uses)
     def refresh_library(self):
@@ -295,9 +320,11 @@ class Engine:
                 if not rid:
                     raise ValueError(f"That doesn't look like a {p.label} book link or id")
                 cand = {"id": rid, "title": b.title, "authors": b.authors, "pages": None}
-            m = p.finalize(cand)
+            m = p.finalize(dict(cand, want_isbns=[i for i in (b.isbn13, b.isbn10) if i], want_audio=b.audio))
             if not m:
-                raise ValueError(f"{p.label} can't use that edition (e.g. an audiobook edition)")
+                raise ValueError(f"{p.label} has no usable edition of that book (e.g. only audiobook or "
+                                 f"other-language editions; see Settings)")
+            self._move_entry(p, b, m, dry=False)
             self.state.save_link(ub_id, key, remote_id=m.id, remote_pages=m.pages, manual=1, skip=0,
                                  link_failed_at=0, error=None, error_at=0)
             self.log.info("%s: '%s' manually linked -> %s", p.label, b.title, m.id)
@@ -384,7 +411,197 @@ class Engine:
             raise ValueError("Nothing to retry")
         return self.start_import(dry=self.job.get("dry", False), skip_existing=self.job.get("skip_existing", False), only=items)
 
-    # --- the import's own log (also written to <data>/imports/)
+    # ---- books removed from your Hardcover library
+    def check_removed(self, force=False):
+        """Compare your whole Hardcover library with our copy (every REMOVAL_CHECK_EVERY) and handle removed books.
+        Off: nothing at all, not even forgetting them here, so turning it on later still catches earlier removals."""
+        if self.common.get("remove_from_services", "off") not in ("want", "all"):
+            return
+        if self.job.get("running") or (not force and time.time() - float(self.state.get("removal_checked_at") or 0)
+                                       < REMOVAL_CHECK_EVERY):
+            return
+        current = self.hc().fetch_library()
+        if not current:
+            self.log.warning("Hardcover returned an empty library; not treating that as every book removed")
+            return
+        self.state.set("removal_checked_at", str(time.time()))
+        now_ids = {b.ub_id for b in current}
+        gone = [b for b in self.state.books() if b.ub_id not in now_ids]
+        if not gone:
+            self.state.set("removal_pending", "")
+            return
+        if len(gone) > REMOVAL_BREAKER:                      # only your confirmation (resolve_removals) gets past this
+            self.state.set("removal_pending", json.dumps([b.ub_id for b in gone]))
+            self.log.error("%d books are no longer in your Hardcover library at once. Nothing was removed: confirm or "
+                           "dismiss on the Import tab (Removed from Hardcover)", len(gone))
+            return
+        self._handle_removed(gone, now_ids)
+
+    def pending_removals(self):
+        ids = json.loads(self.state.get("removal_pending") or "[]")
+        mode = self.common.get("remove_from_services", "off")
+        links = self.state.links_by_book()
+        out = []
+        for ub in ids:
+            b = self.state.get_book(ub)
+            if b:
+                svcs = [self.provider(k).label for k, l in links.get(ub, {}).items() if l["remote_id"] and self.provider(k)]
+                out.append({"id": ub, "title": b.title, "authors": ", ".join(b.authors), "status": b.status, "services": svcs})
+        return {"mode": mode, "books": out}
+
+    def resolve_removals(self, remove):
+        """The pending batch: remove=True handles them per the setting; False only forgets them here."""
+        ids = set(json.loads(self.state.get("removal_pending") or "[]"))
+        if not ids:
+            raise ValueError("Nothing is waiting")
+        current = self.hc().fetch_library()
+        if not current:
+            raise ValueError("Hardcover returned an empty library; try again later")
+        now_ids = {b.ub_id for b in current}
+        gone = [b for b in self.state.books() if b.ub_id in ids and b.ub_id not in now_ids]
+        if remove:
+            done = self._handle_removed(gone, now_ids)
+        else:
+            for b in gone:
+                self.state.delete_book(b.ub_id)
+            done = {"forgotten": len(gone), "removed": 0, "kept": 0, "failed": 0}
+        self.state.set("removal_pending", "")
+        return done
+
+    def _handle_removed(self, gone, now_ids):
+        """Each book gone from Hardcover: take it off the services it's linked on (per the setting), then forget it.
+        Never touches a service entry another book still in your library is linked to (e.g. you swapped a volume
+        for an omnibus that matched the same Goodreads book). A failed removal keeps the book for the next check."""
+        mode = self.common.get("remove_from_services", "off")
+        links = self.state.links_by_book()
+        in_use = {(svc, l["remote_id"]) for ub, ls in links.items() if ub in now_ids for svc, l in ls.items() if l["remote_id"]}
+        out = {"removed": 0, "kept": 0, "failed": 0, "forgotten": 0}
+        for b in gone:
+            eligible = mode == "all" or (mode == "want" and b.status == "want")
+            failed = False
+            for key, l in links.get(b.ub_id, {}).items():
+                p, rid = self.provider(key), l["remote_id"]
+                if not rid or not p:
+                    continue
+                if (key, rid) in in_use:
+                    self.log.info("%s: '%s' left in place: another book in your library uses the same entry", p.label, b.title)
+                    out["kept"] += 1; continue
+                if not eligible or not p.enabled or not p.CAN_REMOVE or l["skip"]:
+                    out["kept"] += 1; continue
+                if self.dry:
+                    self.log.info("[dry-run] %s: would remove '%s' (%s)", p.label, b.title, rid); continue
+                try:
+                    with self.busy(key, timeout=CYCLE_WAIT, why="removing a book"):
+                        removed = p.remove_book(rid)
+                    self.log.info("%s: '%s' %s", p.label, b.title,
+                                  "removed (no longer in your Hardcover library)" if removed else "was already off your shelves")
+                    out["removed"] += int(bool(removed))
+                except Exception as e:
+                    failed = True; out["failed"] += 1
+                    self.log.error("%s: couldn't remove '%s' (%s); will try again later", p.label, b.title, e)
+            if not failed and not self.dry:
+                self.state.delete_book(b.ub_id)
+                out["forgotten"] += 1
+        return out
+
+    # ---- Hardcover edition cleanup (the only writes to Hardcover; each one is a button press in the web UI)
+    def hardcover_cleanup(self):
+        lang = (self.common.get("preferred_language") or "").strip()
+        if not lang:
+            raise ValueError("Set a Preferred edition language in Settings first")
+        return {"language": lang, "books": self.hc().edition_cleanup(lang)}
+
+    def hardcover_set_edition(self, ub_id, edition_id):
+        lang = (self.common.get("preferred_language") or "").strip() or None
+        res = self.hc().set_edition(int(ub_id), int(edition_id), lang)
+        b = self.hc().fetch_one(int(ub_id))                     # refresh the local copy (title, ISBNs, pages)
+        if b:
+            self.state.upsert_book(b, time.time())
+        self.log.info("Hardcover: '%s' now uses edition %s (was %s)%s", b.title if b else ub_id, res["new"], res["old"],
+                      f"; {res['reads_moved']} reading session(s) moved too" if res["reads_moved"] else "")
+        return res
+
+    # ---- editions check: linked audiobook / other-language editions, and moving them to the right one
+    def start_edition_check(self, fix=False):
+        if self.ed_job.get("running"):
+            raise ValueError("An editions check is already running")
+        provs = [p for p in self.providers if p.enabled and p.CHECKS_EDITIONS]
+        if not provs:
+            raise ValueError("None of the enabled services say which language or format an edition is")
+        self.ed_job = {"running": True, "fix": bool(fix), "done": 0, "total": 0, "items": [], "started": time.time(),
+                       "finished": 0, "message": "Checking…" if not fix else "Checking and fixing…",
+                       "services": [p.label for p in provs]}
+        threading.Thread(target=self._edition_worker, args=(provs, bool(fix)), daemon=True, name="editions").start()
+        return self.ed_job
+
+    def _edition_worker(self, provs, fix):
+        job, c = self.ed_job, self.common
+        try:
+            todo = []
+            for p in provs:
+                for ub_id, link in self.state.links_for_service(p.key):
+                    b = self.state.get_book(ub_id)
+                    if b and link["remote_id"] and not link["skip"]:
+                        todo.append((b, p, link))
+            job["total"] = len(todo)
+            for b, p, link in todo:
+                rid = link["remote_id"]
+                job["message"] = f"{p.label}: '{b.title}'"
+                try:
+                    item = self._check_one_edition(b, p, rid, fix)
+                except Exception as e:
+                    item = {"problem": "couldn't check", "result": f"error: {str(e)[:200]}"}
+                if item:
+                    item.update(id=b.ub_id, title=b.title, authors=", ".join(b.authors), service=p.key, label=p.label,
+                                old=rid, old_url=p.book_url(rid))
+                    job["items"].append(item)
+                job["done"] += 1
+            bad = len(job["items"])
+            job["message"] = (f"Done: {bad} book(s) on the wrong edition" if bad else "Done: every linked edition is fine") + \
+                (" (fixed where possible)" if fix and bad else "")
+        except Exception as e:
+            self.log.error("Editions check failed: %s", e)
+            job["message"] = f"Failed: {e}"
+        finally:
+            job.update(running=False, finished=time.time())
+
+    def _check_one_edition(self, b, p, rid, fix):
+        """None if the linked edition is fine; else what's wrong and what was (or would be) done about it."""
+        with self.busy(p.key, timeout=600, why="the editions check"):
+            meta = p.check_edition(rid)
+            problem = p.edition_problem(*meta, want_audio=b.audio) if meta else None
+            soft = False
+            if not problem and meta and b.audio and not is_audio(meta[1]):
+                # you listened but the link is print/ebook: only a problem if the service has an audiobook edition
+                problem, soft = f"{meta[1] or 'print'} edition, but you listened to it", True
+            if not problem:
+                return None
+            hints = [i for i in (b.isbn13, b.isbn10) if i]
+            # another edition of the same work first (keeps your entry, can move it); else a fresh search
+            m = p.finalize({"id": rid, "title": b.title, "authors": b.authors, "want_isbns": hints, "want_audio": b.audio}) \
+                if hasattr(p, "switch_edition") else None
+            if (not m or m.id == rid) and soft:
+                return None                                      # no audiobook edition there: print is the right call
+            if not m or m.id == rid:
+                self.hydrate_book(b)
+                m = p.find(b, self.common["link_by_isbn"], self.common["link_by_title"])
+            if not m or m.id == rid:
+                return {"problem": problem, "result": "no better edition found: link one by hand"}
+            item = {"problem": problem, "new": m.id, "new_url": p.book_url(m.id), "moves_entry": bool(m.switch_from)}
+            if not fix:
+                item["result"] = ("would move your entry to the right edition" if m.switch_from
+                                  else "would relink and send the current status to the right edition")
+                return item
+            self._move_entry(p, b, m, dry=False)
+            self.state.save_link(b.ub_id, p.key, remote_id=m.id, remote_pages=m.pages, error=None, error_at=0)
+            self.log.info("%s: '%s' relinked from %s (%s) to %s", p.label, b.title, rid, problem, m.id)
+        if m.switch_from:
+            item["result"] = "fixed: your entry was moved to the right edition"
+        else:
+            out = self.push_now(b.ub_id, p.key)                  # nothing to move: write the status there
+            item["result"] = ("fixed: relinked and sent the current status" + (f" ({out['error']})" if out["error"] else "")
+                              + "; the old entry, if any, is still on the service")
+        return item
     def _sleep(self, seconds):
         """Sleep, but wake early (returning False) if the import is cancelled."""
         end = time.monotonic() + seconds

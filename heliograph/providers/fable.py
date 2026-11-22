@@ -17,6 +17,7 @@ class Fable(Provider):
     key, label = "fable", "Fable"
     HOME = "https://fable.co/"
     SUPPORTED = ("want", "reading", "read", "dnf")          # Fable has no Paused list
+    CHECKS_EDITIONS = True
 
     def __init__(self, config, log):
         super().__init__(config, log)
@@ -88,18 +89,36 @@ class Fable(Provider):
     def search(self, query):
         return [self._cand(b) for b in self._books(query)] if query.strip() else []
 
-    def lookup_isbn(self, isbn):
+    def lookup_isbn(self, isbn, want_audio=False):
         cands = [self._cand(b) for b in self._books(isbn)]
         hit = next((c for c in cands if c["isbn"] == isbn), cands[0] if cands else None)   # plugin: first if no exact
-        return Match(hit["id"], self._edition_pages(hit["id"], isbn)) if hit else None
+        return self.finalize(dict(hit, isbn=isbn, want_audio=want_audio)) if hit else None
 
     def finalize(self, cand):
-        return Match(cand["id"], self._edition_pages(cand["id"], cand.get("isbn")))
+        """Refuse a book whose own edition is an audiobook or in another language (Settings)."""
+        eds = self._editions(cand["id"])
+        cur = next((e for e in eds if e.get("is_current_book")), None)
+        problem = self.edition_problem(*self._meta(cur), want_audio=bool(cand.get("want_audio"))) if cur else None
+        if problem:
+            self.log.info("Fable: skipping %s for '%s': %s", cand["id"], cand.get("title") or "?", problem)
+            return None
+        return Match(cand["id"], self._edition_pages(cand["id"], cand.get("isbn"), eds))
 
-    def _edition_pages(self, rid, isbn):
-        """findEditionPageCount: edition by ISBN, else the current one, else any with a page count."""
+    @staticmethod
+    def _meta(e):
+        return (((e or {}).get("language") or {}).get("name") or ""), (((e or {}).get("format") or {}).get("name") or "")
+
+    def _editions(self, rid):
         code, d = self._req(f"/api/books/{rid}/editions/")
-        eds = (d or {}).get("results") if code == 200 else None
+        return ((d or {}).get("results") if code == 200 else None) or []
+
+    def check_edition(self, remote_id):
+        cur = next((e for e in self._editions(remote_id) if e.get("is_current_book")), None)
+        return self._meta(cur) if cur else None
+
+    def _edition_pages(self, rid, isbn, eds=None):
+        """findEditionPageCount: edition by ISBN, else the current one, else any with a page count."""
+        eds = eds if eds is not None else self._editions(rid)
         if not eds:
             return None
         ok = lambda e: (e.get("page_count") or 0) > 0
@@ -130,6 +149,21 @@ class Fable(Provider):
             self._lists = {l["system_type"]: l["id"] for l in d["results"]
                            if l.get("type") == "system" and l.get("system_type")}
         return self._lists
+
+    CAN_REMOVE = True
+
+    def remove_book(self, remote_id):
+        """Take the book off every Fable list (the same multiselect call the app uses, with no list selected)."""
+        if self._status(remote_id) is None:
+            return False
+        ids = self._list_ids()
+        code, _ = self._req(f"/api/v2/users/{self._uid()}/book_lists/book", "POST", {
+            "type": "multiselect", "book_id": remote_id, "book_list_ids": [], "exclude_from": list(ids.values())})
+        if not (200 <= (code or 0) < 300):
+            raise ProviderError(f"Fable remove -> HTTP {code}")
+        if self._status(remote_id) is not None:
+            raise ProviderError("Fable didn't confirm the removal")
+        return True
 
     def set_status(self, remote_id, status, book):
         target = SYSTEM_TYPE.get(status)

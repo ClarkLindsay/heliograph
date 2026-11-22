@@ -52,7 +52,10 @@ other services. All credit for working out how to talk to each service goes to t
 Ratings: Goodreads quarter stars, StoryGraph quarter stars (review form, other review fields untouched), Fable as-is,
 Pagebound and LibraryThing half stars (floored), the same as ShelfSync.
 
-Sync is **one way only**. Heliograph reads Hardcover through its official API and never writes to it.
+Sync is **one way only**. Heliograph reads Hardcover through its official API and never writes to it while syncing.
+The one exception is the optional **Hardcover editions** cleanup on the Import tab. It changes a book's edition in
+your Hardcover library, for example from a translation you never read to the English edition, and only when you press
+**Apply** for that book.
 
 By default the first run is a **baseline**: it records your current library and pushes nothing, so only *later* changes
 are sent. That's the safe choice if you've already imported your history into each service. Use the **Import** tab
@@ -75,7 +78,7 @@ are sent. That's the safe choice if you've already imported your history into ea
 
 | Service | How Heliograph talks to it |
 |---|---|
-| Hardcover | **Official** public GraphQL API, read-only, with your personal API token |
+| Hardcover | **Official** public GraphQL API with your personal API token. Read-only, except the edition cleanup you apply by hand |
 | Fable | **Official** API, signed in with your email and password |
 | Pagebound | The **same API its own website uses**, signed in with your email and password |
 | Goodreads | **Unofficial**: replays your browser session cookie and scrapes or posts to website pages |
@@ -439,9 +442,30 @@ LibraryThing has no reading status or progress: a "status" is which collection a
 - **Matching:**
   - Title matching uses ShelfSync's similarity scoring. Unconfident matches are skipped, not guessed, and retried
     every 6 hours. Use **Find edition…** to link them by hand.
-  - StoryGraph follows to the edition you already have a status on, and refuses audio editions.
-  - Pagebound has no ISBN lookup.
+  - **Editions:** StoryGraph, Goodreads and Fable say which language and format each edition is. Heliograph only links
+    editions in your **Preferred edition language** (default English; blank = any). The format follows your Hardcover
+    edition: for a book you **listened** to (an audiobook edition in Hardcover), an audiobook edition is preferred, with
+    print as the fallback when there isn't one. For books you read, audiobook editions are avoided, unless you turn
+    off **Avoid audiobook editions**. On StoryGraph it follows to the edition you already have a status on if that one
+    is acceptable. If your entry is on an audiobook or another-language edition, it links the right
+    edition of the same work and moves your entry there with StoryGraph's own "switch to this edition", keeping your
+    dates, rating and review. That never happens in a preview.
+  - **Fixing existing links:** the Import tab's **Linked editions** card checks every linked book and lists the ones on
+    the wrong edition. **Fix them** relinks those books: on StoryGraph your entry is moved, and elsewhere the current
+    status is sent to the new edition. The old entry stays on Goodreads or Fable for you to remove.
+  - Pagebound has no ISBN lookup, and Pagebound and LibraryThing don't say which edition is which.
 - **Retries:** if any push fails, the Hardcover change window is held open so it's retried next cycle (for up to 7 days).
+- **Removing books:** taking a book out of your Hardcover library does nothing on your services unless you set
+  **When you remove a book from Hardcover, also remove it from your services**:
+  - `want` removes Want to Read books;
+  - `all` removes any status, which also deletes your rating and review there.
+
+  Removed books are spotted within about 30 minutes, on StoryGraph, Goodreads, Fable and Pagebound.
+
+  Safety:
+  - An entry another book in your library still uses is never removed.
+  - More than 5 books gone at once are held for you to confirm on the Import tab.
+  - An empty library from Hardcover is never treated as "everything removed".
 - **Progress:** audiobook-only progress (seconds) isn't synced, only page progress.
 - **Fragility:** Goodreads, StoryGraph and LibraryThing are unofficial and can break when the sites change.
 

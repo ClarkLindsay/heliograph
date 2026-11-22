@@ -14,6 +14,7 @@ class FakeHC:
     def fetch_updated_since(self, ts): return list(self.lib.values())
     def fetch_reading(self): return [b for b in self.lib.values() if b.status == "reading"]
     def hydrate(self, b): b.hydrated = True
+    def fetch_one(self, ub_id): return self.lib.get(ub_id)
 
 
 class Fake(Provider):
@@ -188,6 +189,94 @@ def test_stuck_service_does_not_block_the_others():
         assert p.calls == [("status", "R1", "read")]
 
 
+def test_editions_check_and_fix():
+    import time as _t
+    from heliograph.providers.base import Match
+    with tempfile.TemporaryDirectory() as tmp:
+        hc, p, eng = make(tmp, "import_all")
+        q = Fake(eng.config, eng.log); q.key, q.label = "storygraph", "StoryGraph"
+        eng.config["storygraph"]["enabled"] = True; eng.providers.append(q)
+        hc.lib[1] = Book(1, "Dune", authors=["Frank Herbert"], status="read")
+        hc.lib[2] = Book(2, "Fine", authors=["X"], status="read")
+        eng.run_once()                                               # links R1 / R2 on both services
+        langs = {"R1": ("German", "Paperback"), "R2": ("English", "Hardcover"), "EN1": ("English", "Paperback")}
+        moved = []
+        for prov in (p, q):
+            prov.check_edition = lambda rid: langs[rid]
+            prov.CHECKS_EDITIONS = True
+        # StoryGraph-like: another edition of the same work, your entry moved there
+        q.switch_edition = lambda a, b: moved.append((a, b))
+        q.finalize = lambda cand: Match("EN1", 500, switch_from=cand["id"], note="x") if cand["id"] == "R1" else None
+        # Goodreads-like: no switching; a fresh search finds the English edition
+        p.find = lambda b, i=True, t=True: Match("EN1", 400) if b.ub_id == 1 else None
+
+        def run(fix):
+            eng.start_edition_check(fix)
+            for _ in range(200):
+                if not eng.ed_job["running"]: break
+                _t.sleep(0.02)
+            return eng.ed_job
+        p.calls.clear(); q.calls.clear()
+        job = run(False)                                             # preview: nothing changes
+        assert job["total"] == 4 and len(job["items"]) == 2 and moved == [] and p.calls == [] and q.calls == []
+        assert {(i["service"], i["new"], i["moves_entry"]) for i in job["items"]} == {("goodreads", "EN1", False), ("storygraph", "EN1", True)}
+        assert eng.state.link(1, "storygraph")["remote_id"] == "R1"
+        job = run(True)
+        assert moved == [("R1", "EN1")] and q.calls == []            # entry moved, nothing re-sent on StoryGraph
+        assert p.calls == [("status", "EN1", "read")]                 # Goodreads: status sent to the new edition
+        assert eng.state.link(1, "storygraph")["remote_id"] == "EN1" and eng.state.link(1, "goodreads")["remote_id"] == "EN1"
+        assert all(i["result"].startswith("fixed") for i in job["items"])
+        assert len(run(False)["items"]) == 0                         # all fine now
+
+
+def test_books_removed_from_hardcover():
+    with tempfile.TemporaryDirectory() as tmp:
+        hc, p, eng = make(tmp, "import_all")
+        p.CAN_REMOVE = True; removed = []; fail = {"on": False}
+        def rm(rid):
+            if fail["on"]: raise RuntimeError("site down")
+            removed.append(rid); return True
+        p.remove_book = rm
+        p.find = lambda b, i=True, t=True: Match("SHARED" if b.ub_id in (3, 4) else "R" + str(b.ub_id), 300)
+        lib = {1: Book(1, "Want", status="want"), 2: Book(2, "Read", status="read"), 3: Book(3, "Vol 1", status="want"),
+               4: Book(4, "Omnibus", status="want")}
+        hc.lib.update(lib)
+        eng.run_once()
+        assert eng.state.link(3, "goodreads")["remote_id"] == "SHARED"
+
+        for k in (1, 2, 3): hc.lib.pop(k)                         # removed from Hardcover
+        eng.config["common"]["remove_from_services"] = "off"
+        eng.check_removed(force=True)
+        assert removed == [] and eng.state.get_book(1) is not None  # off: untouched, so turning it on later still works
+        eng.config["common"]["remove_from_services"] = "want"
+        fail["on"] = True
+        eng.check_removed(force=True)
+        assert removed == [] and eng.state.get_book(1) is not None  # failed: kept for the next check
+        fail["on"] = False
+        eng.check_removed(force=True)
+        assert removed == ["R1"]                                    # want only; the read book and the shared entry stay
+        assert all(eng.state.get_book(k) is None for k in (1, 2, 3)) and eng.state.get_book(4) is not None
+
+        hc.lib.update({k: lib[k] for k in (1, 2)}); eng.run_once(); removed.clear()
+        eng.config["common"]["remove_from_services"] = "all"
+        for k in (1, 2): hc.lib.pop(k)
+        eng.check_removed(force=True)
+        assert sorted(removed) == ["R1", "R2"]
+
+        # many gone at once: nothing happens until you confirm
+        for i in range(10, 17): hc.lib[i] = Book(i, f"B{i}", status="want")
+        eng.run_once(); removed.clear()
+        saved = dict(hc.lib); hc.lib.clear(); hc.lib[4] = saved[4]
+        eng.check_removed(force=True)
+        assert removed == [] and len(eng.pending_removals()["books"]) == 7, (removed, eng.pending_removals(), eng.state.get("removal_pending"))
+        assert eng.resolve_removals(remove=True)["removed"] == 7 and len(removed) == 7
+        assert eng.pending_removals()["books"] == [] and eng.state.get_book(10) is None
+
+        hc.lib.clear(); removed.clear()                             # Hardcover returns nothing: never "all removed"
+        eng.check_removed(force=True)
+        assert removed == [] and eng.state.get_book(4) is not None
+
+
 def test_parse():
     ub = {"id": 9, "book_id": 4, "edition_id": 7, "status_id": 2, "rating": None,
           "book": {"title": "T", "pages": 300, "contributions": [
@@ -201,6 +290,7 @@ def test_parse():
 if __name__ == "__main__":
     for t in (test_flow, test_failed_update_is_retried_even_outside_the_window, test_per_book_error_does_not_block_others_and_holds_window,
               test_steps_and_throttle, test_import_all_and_want_filter, test_new_service_gets_own_baseline,
-              test_dry_run_changes_nothing, test_link_is_remembered_and_unmatched_is_throttled, test_status_only_provider_gets_no_progress, test_stuck_service_does_not_block_the_others, test_parse):
+              test_dry_run_changes_nothing, test_link_is_remembered_and_unmatched_is_throttled, test_status_only_provider_gets_no_progress, test_stuck_service_does_not_block_the_others,
+              test_editions_check_and_fix, test_books_removed_from_hardcover, test_parse):
         t()
     print("engine tests passed")

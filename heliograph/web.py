@@ -53,9 +53,14 @@ SPEC = {
         ("progress_step_pages", "Progress step (pages) in pages mode", "int"),
         ("link_by_isbn", "Automatically link by ISBN", "bool"),
         ("link_by_title", "Automatically link by title and author", "bool"),
+        ("preferred_language", "Preferred edition language (blank = any)", "str"),
+        ("avoid_audiobooks", "Avoid audiobook editions for books you read (audiobooks in Hardcover get audiobook editions)", "bool"),
         ("sync_want_to_read", "Sync Want to Read", "bool"),
         ("sync_paused_dnf", "Sync Paused / Did Not Finish", "bool"),
         ("sync_ratings", "Sync ratings when marked Read", "bool"),
+        ("remove_from_services", "When you remove a book from Hardcover, also remove it from your services "
+                                 "(off / want = only Want to Read books / all = any status, deletes ratings and reviews there too)",
+         "choice:off,want,all"),
         ("initial_sync", "First run for a newly enabled service", "choice:baseline,import_all"),
         ("verbose_logging", "Verbose logging", "bool")]),
 }
@@ -430,6 +435,9 @@ def make_handler(api, cfg):
                 if path == "/api/settings": return api.settings()
                 if path == "/api/log": return api.log_lines(min(int((q.get("n") or ["120"])[0]), 500))
                 if path == "/api/import": return api.import_status()
+                if path == "/api/editions": return dict(api.e.ed_job)
+                if path == "/api/hardcover/cleanup": return api._guard(api.e.hardcover_cleanup)
+                if path == "/api/removals": return api.e.pending_removals()
                 m = re.fullmatch(r"/api/book/(\d+)", path)
                 if m: return api.book(int(m.group(1)))
                 m = re.fullmatch(r"/api/book/(\d+)/cover", path)
@@ -441,6 +449,14 @@ def make_handler(api, cfg):
                 if path == "/api/import": return api.import_start(body)
                 if path == "/api/import/cancel": return api.import_cancel()
                 if path == "/api/import/retry-failed": return api.import_retry()
+                if path == "/api/editions": return dict(api._guard(api.e.start_edition_check, bool(body.get("fix"))))
+                if path == "/api/removals": return api._guard(api.e.resolve_removals, bool(body.get("remove")))
+                if path == "/api/hardcover/cleanup":
+                    try:
+                        ub, ed = int(body["id"]), int(body["edition_id"])
+                    except (KeyError, TypeError, ValueError):
+                        raise ApiError(400, "Send id and edition_id")
+                    return api._guard(api.e.hardcover_set_edition, ub, ed)
                 m = re.fullmatch(r"/api/book/(\d+)/push-all", path)
                 if m: return api.push_all(int(m.group(1)))
                 m = re.fullmatch(r"/api/test/(\w+)", path)
