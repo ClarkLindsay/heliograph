@@ -111,6 +111,7 @@ def book_view(b, links, providers):
     pct = b.percent
     return {"id": b.ub_id, "title": b.title, "authors": b.authors, "status": b.status, "pages": b.pages,
             "total_pages": b.total_pages, "percent": pct, "rating": b.rating, "finished_on": b.finished_on,
+            "listened": [b.seconds, b.total_seconds] if b.timed else None,
             "services": {p.key: link_view(links.get(p.key) or dict(p_default(p)), p) for p in providers}}
 
 

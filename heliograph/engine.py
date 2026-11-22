@@ -167,9 +167,10 @@ class Engine:
         return status in ("reading", "read")
 
     def _progress_due(self, b, st, status_changed, now):
-        if b.status != "reading" or b.pages is None or b.pages == st["pages"]:
+        pos = b.position                         # pages, or percent for audiobooks timed in Hardcover
+        if b.status != "reading" or pos is None or pos == st["pages"]:
             return False
-        if b.pages == 0 and not st["pages"]:
+        if pos == 0 and not st["pages"]:
             return False                         # nothing read yet
         if status_changed:
             return True
@@ -178,9 +179,11 @@ class Engine:
             return False
         if st["pages"] is None:
             return True
+        if b.timed:
+            return abs(pos - st["pages"]) >= c["progress_step_percent"]
         if c["progress_mode"] == "percent" and b.total_pages:
-            return abs(b.pages - st["pages"]) * 100 / b.total_pages >= c["progress_step_percent"]
-        return abs(b.pages - st["pages"]) >= c["progress_step_pages"]
+            return abs(pos - st["pages"]) * 100 / b.total_pages >= c["progress_step_percent"]
+        return abs(pos - st["pages"]) >= c["progress_step_pages"]
 
     def _note(self, b, p, error, now, dry=None):
         if not (self.dry if dry is None else dry):
@@ -192,7 +195,7 @@ class Engine:
         st = st if st is not None else self.state.link(b.ub_id, p.key)
         if baseline:
             if not dry:
-                self.state.save_link(b.ub_id, p.key, status=b.status, pages=b.pages, rating=b.rating, pushed_at=now)
+                self.state.save_link(b.ub_id, p.key, status=b.status, pages=b.position, rating=b.rating, pushed_at=now)
             return 0
         if st["skip"] or not b.status or not self._allowed(p, b.status):
             return 0
@@ -201,7 +204,7 @@ class Engine:
         rating_changed = bool(c["sync_ratings"] and b.status == "read" and b.rating and b.rating != st["rating"])
         if not (status_changed or progress_changed or rating_changed):
             self.log.debug("%s: '%s' unchanged (Hardcover: %s p.%s/%s, last synced: %s p.%s)", p.label, b.title,
-                           b.status, b.pages, b.total_pages or "?", st["status"], st["pages"])
+                           b.status, b.position, b.total_pages or "?", st["status"], st["pages"])
             return 0
         try:
             hydrate = getattr(self.hc(), "hydrate", None)
@@ -221,19 +224,20 @@ class Engine:
                     p.set_status(rid, b.status, b)
                 done += 1; upd["status"] = b.status
             if progress_changed:
-                by_pages = c["progress_mode"] == "pages" or b.percent is None
+                by_pages = (c["progress_mode"] == "pages" and not b.timed) or b.percent is None
                 self.log.info("%s%s: '%s' progress %s", tag, p.label, b.title,
-                              f"p.{b.pages}/{b.total_pages or '?'}" if by_pages else f"{b.percent}%")
+                              f"p.{b.pages}/{b.total_pages or '?'}" if by_pages else
+                              f"{b.percent}% ({b.seconds // 60} of {b.total_seconds // 60} min)" if b.timed else f"{b.percent}%")
                 if not dry:
                     p.set_progress(rid, b, by_pages, rpages)
-                done += 1; upd["pages"] = b.pages
+                done += 1; upd["pages"] = b.position
             if rating_changed:
                 self.log.info("%s%s: '%s' rated %s", tag, p.label, b.title, b.rating)
                 if not dry:
                     p.set_rating(rid, b.rating, b)
                 done += 1; upd["rating"] = b.rating
             if b.status == "read":
-                upd["pages"] = b.pages
+                upd["pages"] = b.position
             if done:
                 upd["pushed_at"] = now
             upd.update(error=None, error_at=0)
@@ -760,7 +764,7 @@ class Engine:
             return out                                           # missing or on another shelf: write everything
         known = remote.get("known") or set()
         if b.status == "reading":
-            out["pages"] = b.pages                               # on the right shelf: progress follows later updates
+            out["pages"] = b.position                            # on the right shelf: progress follows later updates
         elif b.status == "read":
             if b.rating:
                 same = ("rating" not in known or remote.get("rating") is not None and

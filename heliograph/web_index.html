@@ -38,6 +38,7 @@ a{color:var(--acc)}.ico{border-radius:6px;vertical-align:middle;margin-right:6px
 const $=s=>document.querySelector(s);
 function h(tag,attrs,...kids){const e=document.createElement(tag);for(const[k,v]of Object.entries(attrs||{})){if(k==='class')e.className=v;else if(k.startsWith('on'))e.addEventListener(k.slice(2),v);else if(v===true)e.setAttribute(k,'');else if(v!==false&&v!=null)e.setAttribute(k,v)}
  for(const c of kids.flat())if(c!=null&&c!==false)e.append(c.nodeType?c:document.createTextNode(String(c)));return e}
+const hm=s=>{const m=Math.round(s/60);return m>=60?`${Math.floor(m/60)}h ${m%60}m`:`${m}m`};
 function fill(el,...c){el.replaceChildren(...c.flat().filter(x=>x!=null&&x!==false))}
 function put(el,...c){c.flat().filter(x=>x!=null&&x!==false).forEach(x=>el.append(x))}
 async function api(path,body){const o=body===undefined?{}:{method:'POST',headers:{'X-Requested-With':'heliograph-ui','Content-Type':'application/json'},body:JSON.stringify(body)};
@@ -223,7 +224,7 @@ async function books(){const m=$('#main'),tok=tabToken;
  const rowFor=b=>{const nm=Object.values(b.services).some(v=>v.state==='nomatch');return h('tr',{class:'book',onclick:()=>openBook(b.id)},
    h('td',{},nm?h('span',{class:'flag',title:'No match on at least one service: open it to link the right edition'},'⚑ '):null,h('b',{},b.title),h('div',{class:'small mut'},b.authors.join(', '))),
    h('td',{class:'small'},b.status||'—'),
-   h('td',{class:'small'},b.status==='reading'&&b.pages!=null?[`p.${b.pages}${b.total_pages?'/'+b.total_pages:''}`,b.percent!=null?h('div',{class:'bar'},h('i',{style:`width:${b.percent}%`})):null]:(b.rating?'★ '+b.rating:'')),
+   h('td',{class:'small'},b.status==='reading'&&(b.pages!=null||b.listened)?[b.listened?`${b.percent}% listened`:`p.${b.pages}${b.total_pages?'/'+b.total_pages:''}`,b.percent!=null?h('div',{class:'bar'},h('i',{style:`width:${b.percent}%`})):null]:(b.rating?'★ '+b.rating:'')),
    h('td',{},Object.entries(b.services).map(([k,v])=>h('span',{class:'chip '+v.state,title:(LAB[v.state]||v.state)+(v.error?': '+v.error:'')},(svcLabels[k]||k)+(v.state==='linked'?'':' · '+LAB[v.state])))))};
  function more(total){let mo=out.querySelector('.more');if(mo)mo.remove();if(loaded<total)out.append(h('p',{class:'more'},h('button',{class:'btn',onclick:()=>load('more')},`Show more (${total-loaded} left)`)))}
  async function load(mode){try{
@@ -247,7 +248,7 @@ async function books(){const m=$('#main'),tok=tabToken;
 async function openBook(id){const md=$('#modal');const flash={};let cover=null,pushAll=null;api(`/api/book/${id}/cover`).then(r=>{if(r.url){cover=r.url;const el=document.querySelector('#hccover');if(el)el.setAttribute('src',r.url)}}).catch(()=>{});
  async function draw(b){md.replaceChildren(h('div',{class:'modal',onclick:e=>{if(e.target.className==='modal'){closeModal()}}},h('div',{class:'sheet'},
   h('div',{class:'row',style:'flex-wrap:nowrap'},h('img',{id:'hccover',class:'cover',alt:'',referrerpolicy:'no-referrer',src:cover||'data:image/gif;base64,R0lGODlhAQABAAAAACw='}),h('div',{class:'grow'},h('h2',{style:'margin:0'},b.title),h('div',{class:'mut'},b.authors.join(', '))),h('button',{class:'btn',onclick:()=>{closeModal()}},'Close')),
-  h('p',{class:'small'},'Hardcover: ',h('b',{},b.status||'—'),b.pages!=null?` · page ${b.pages}${b.total_pages?' of '+b.total_pages:''}`:'',b.rating?` · rated ${b.rating}`:'',b.finished_on?` · finished ${b.finished_on}`:''),
+  h('p',{class:'small'},'Hardcover: ',h('b',{},b.status||'—'),b.listened?` · ${hm(b.listened[0])} of ${hm(b.listened[1])} listened (${b.percent}%)`:b.pages!=null?` · page ${b.pages}${b.total_pages?' of '+b.total_pages:''}`:'',b.rating?` · rated ${b.rating}`:'',b.finished_on?` · finished ${b.finished_on}`:''),
   h('div',{class:'row',style:'margin:6px 0'},h('button',{class:'btn pri',onclick:async e=>{e.target.disabled=true;try{const r=await api(`/api/book/${b.id}/push-all`,{});pushAll=r.results;draw(r.book)}catch(x){pushAll=[{label:'Error',ok:false,error:x.message}];draw(b)}}},'Push to all services'),h('span',{class:'small mut'},'sends this book’s current status, progress and rating everywhere')),
   pushAll?h('div',{class:'msg small'},pushAll.map(r=>h('div',{},(r.ok?'✓ ':'✗ ')+r.label+': '+(r.ok?(r.pushed?`pushed ${r.pushed} update(s)`:(r.linked?'nothing needed pushing':'no match found yet')):r.error)))):null,
   Object.entries(b.services).map(([k,v])=>svc(b,k,v)))))}

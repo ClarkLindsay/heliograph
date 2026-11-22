@@ -306,8 +306,34 @@ def test_parse():
     assert Book(1, "x", pages=1, total_pages=8).percent == 13     # floor(x + 0.5), like the plugin
 
 
+def test_audiobook_progress_is_sent_as_percent():
+    with tempfile.TemporaryDirectory() as tmp:
+        hc, p, eng = make(tmp)
+        hc.lib[1] = Book(1, "Listen", status="reading", audio=True, seconds=0, total_seconds=36000)
+        eng.run_once()                                         # baseline
+        hc.lib[1].seconds = 9000; eng.run_once()               # 25% in, even in pages mode
+        assert p.calls == [("progress", "R1", 25, 300)]
+        p.calls.clear()
+        hc.lib[1].seconds = 9100; eng.run_once()               # still 25%: below the 1% step
+        assert p.calls == []
+        hc.lib[1].seconds = 18000; eng.run_once()
+        assert p.calls == [("progress", "R1", 50, 300)]
+        assert eng.state.get_book(1).seconds == 18000
+
+
+def test_parse_audiobook():
+    ub = {"id": 9, "book_id": 4, "edition_id": 7, "status_id": 2, "rating": None,
+          "book": {"title": "T", "pages": 300, "contributions": []},
+          "edition": {"reading_format_id": 2, "audio_seconds": 40000},
+          "user_book_reads": [{"progress_pages": None, "progress_seconds": 10000}]}
+    b = book_from_ub(ub)
+    assert (b.audio, b.timed, b.percent, b.position) == (True, True, 25, 25)
+    b = Book(1, "x", audio=True, pages=30, total_pages=300)            # no time recorded: pages as before
+    assert (b.timed, b.position, b.percent) == (False, 30, 10)
+
+
 if __name__ == "__main__":
-    for t in (test_flow, test_failed_update_is_retried_even_outside_the_window, test_per_book_error_does_not_block_others_and_holds_window,
+    for t in (test_audiobook_progress_is_sent_as_percent, test_parse_audiobook, test_flow, test_failed_update_is_retried_even_outside_the_window, test_per_book_error_does_not_block_others_and_holds_window,
               test_steps_and_throttle, test_import_all_and_want_filter, test_new_service_gets_own_baseline,
               test_dry_run_changes_nothing, test_link_is_remembered_and_unmatched_is_throttled, test_status_only_provider_gets_no_progress, test_stuck_service_does_not_block_the_others,
               test_editions_check_and_fix, test_books_removed_from_hardcover, test_profile_links_are_refreshed_weekly, test_parse):

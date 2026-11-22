@@ -14,8 +14,8 @@ FORMAT_NAMES = {1: "Print", 2: "Audiobook", 3: "Print", 4: "Ebook"}
 UB_FIELDS = """
   id book_id edition_id status_id rating updated_at
   book { id title pages contributions { contribution author { name } } }
-  edition { reading_format_id }
-  user_book_reads(order_by: {id: desc}, limit: 1) { id progress_pages started_at finished_at }
+  edition { reading_format_id audio_seconds }
+  user_book_reads(order_by: {id: desc}, limit: 1) { id progress_pages progress_seconds started_at finished_at }
 """
 
 
@@ -38,13 +38,27 @@ class Book:
     edition_id: Optional[int] = None
     finished_on: Optional[str] = None   # YYYY-MM-DD of the latest read
     audio: bool = False                 # your Hardcover edition is an audiobook ("Listened")
+    seconds: Optional[int] = None       # audiobook progress: time listened
+    total_seconds: Optional[int] = None # audiobook length
     hydrated: bool = False
 
     @property
+    def timed(self):
+        """An audiobook whose progress Hardcover keeps as time listened: it's synced as a percentage."""
+        return bool(self.audio and self.seconds is not None and self.total_seconds)
+
+    @property
     def percent(self):
+        if self.timed:
+            return max(0, min(100, int(self.seconds * 100 / self.total_seconds + 0.5)))
         if self.pages is not None and self.total_pages:
             return max(0, min(100, int(self.pages * 100 / self.total_pages + 0.5)))
         return None
+
+    @property
+    def position(self):
+        """How far along you are, as progress is tracked: the percentage for timed audiobooks, else the page."""
+        return self.percent if self.timed else self.pages
 
 
 def book_from_ub(ub: dict) -> Book:
@@ -63,6 +77,7 @@ def book_from_ub(ub: dict) -> Book:
         book_id=ub.get("book_id"), edition_id=ub.get("edition_id"),
         finished_on=(read.get("finished_at") or None),
         audio=(ub.get("edition") or {}).get("reading_format_id") == AUDIO_FORMAT,
+        seconds=read.get("progress_seconds"), total_seconds=(ub.get("edition") or {}).get("audio_seconds") or None,
     )
 
 

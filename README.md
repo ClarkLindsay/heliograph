@@ -45,7 +45,7 @@ other services. All credit for working out how to talk to each service goes to t
 |---|---|
 | Book added as Currently Reading | Currently-reading shelf |
 | Want to Read | Want/Interested shelf (toggle) |
-| Progress changes | Page (mapped to that service's edition page count) or %, throttled with step sizes |
+| Progress changes | Page (mapped to that service's edition page count) or %, throttled with step sizes. Audiobooks tracked by time are sent as % |
 | Marked Read | Read shelf, finish date (Goodreads/Pagebound), then your rating |
 | Rating changed later | Rating re-pushed |
 | Paused / DNF | Off by default (Goodreads/StoryGraph/Pagebound take both, Fable DNF only) |
@@ -501,7 +501,8 @@ LibraryThing has no reading status or progress: a "status" is which collection a
   - An entry another book in your library still uses is never removed.
   - More than 5 books gone at once are held for you to confirm on the Import tab.
   - An empty library from Hardcover is never treated as "everything removed".
-- **Progress:** audiobook-only progress (seconds) isn't synced, only page progress.
+- **Progress:** audiobooks you track by time in Hardcover are sent as a percentage (0.4.2+); everything else follows
+  the progress mode setting.
 - **Fragility:** Goodreads, StoryGraph and LibraryThing are unofficial and can break when the sites change.
 
 ## Updating
