@@ -34,7 +34,7 @@ STATUS_ORDER = {"reading": 0, "paused": 1, "want": 2, "read": 3, "dnf": 4}
 
 # section -> (label, [(key, label, kind)])   kind: str | secret | bool | int | choice:a,b
 SPEC = {
-    "hardcover": ("Hardcover", [("token", "API token", "secret"), ("home_url", "Dashboard icon link (blank = your profile there)", "str")]),
+    "hardcover": ("Hardcover", [("token", "API token", "secret"), ("home_url", "Dashboard icon link", "str")]),
     "goodreads": ("Goodreads", [
         ("enabled", "Sync to Goodreads", "bool"),
         ("cookie_refresh_url", "Cookie Auto-Refresh URL", "str"),
@@ -44,23 +44,23 @@ SPEC = {
         ("user_agent", "User-Agent override", "str"),
         ("request_delay_seconds", "Seconds between Goodreads requests (fewer WAF challenges)", "int"),
         ("waf_cooldown_minutes", "Pause after a WAF challenge that can't be cleared (minutes)", "int"),
-        ("home_url", "Dashboard icon link (blank = your profile there)", "str")]),
+        ("home_url", "Dashboard icon link", "str")]),
     "storygraph": ("StoryGraph", [
         ("enabled", "Sync to StoryGraph", "bool"),
         ("session_cookie", "_storygraph_session", "secret"),
         ("remember_user_token", "remember_user_token", "secret"),
-        ("home_url", "Dashboard icon link (blank = your profile there)", "str")]),
+        ("home_url", "Dashboard icon link", "str")]),
     "fable": ("Fable", [
         ("enabled", "Sync to Fable", "bool"), ("email", "Email", "str"), ("password", "Password", "secret"),
-        ("home_url", "Dashboard icon link (blank = your profile there)", "str")]),
+        ("home_url", "Dashboard icon link", "str")]),
     "pagebound": ("Pagebound", [
         ("enabled", "Sync to Pagebound", "bool"), ("email", "Email", "str"), ("password", "Password", "secret"),
-        ("home_url", "Dashboard icon link (blank = your profile there)", "str")]),
+        ("home_url", "Dashboard icon link", "str")]),
     "librarything": ("LibraryThing", [
         ("enabled", "Sync to LibraryThing", "bool"), ("username", "Username", "str"),
         ("password", "Password", "secret"), ("session_cookie", "Session cookies (alternative)", "secret"),
         ("read_collection_id", "Read collection id (0 = Your library)", "int"), ("user_agent", "User-Agent override", "str"),
-        ("home_url", "Dashboard icon link (blank = your profile there)", "str")]),
+        ("home_url", "Dashboard icon link", "str")]),
     "common": ("Sync behaviour", [
         ("poll_interval_minutes", "Poll Hardcover every (minutes)", "int"),
         ("min_update_interval_seconds", "Min seconds between progress updates", "int"),
@@ -150,12 +150,8 @@ class Api:
                     if s in counts:
                         counts[s] += 1
             services.append({"key": p.key, "label": p.label, "enabled": p.enabled, "counts": counts, "home": p.home_url()})
-        hc_custom = (self.cfg["hardcover"].get("home_url") or "").strip()
-        hc_user = getattr(self.e._hc, "username", None)
-        hardcover_home = hc_custom if hc_custom.startswith(("https://", "http://")) else (
-            f"https://hardcover.app/@{hc_user}" if hc_user else "https://hardcover.app/")
         st = dict(self.e.status)
-        st["hardcover_home"] = hardcover_home
+        st["hardcover_home"] = self.hardcover_home()
         st.update(books=self.e.state.book_count(), services=services, now=time.time(),
                   poll_minutes=self.cfg["common"]["poll_interval_minutes"], job=self.import_status(),
                   secrets={"encrypted": self.cfg.encryption_enabled, "plaintext": self.cfg._plaintext_on_disk,
@@ -298,9 +294,25 @@ class Api:
                     row["set"] = bool(val)
                 else:
                     row["value"] = val
+                if key == "home_url" and not (val or "").strip():
+                    row["auto"] = self.auto_home(sec)                 # shown in the box; saving it unchanged keeps it automatic
                 rows.append(row)
             out.append({"section": sec, "label": label, "fields": rows})
         return {"sections": out}
+
+    def hardcover_home(self):
+        custom = (self.cfg["hardcover"].get("home_url") or "").strip()
+        if custom.startswith(("https://", "http://")):
+            return custom
+        user = getattr(self.e._hc, "username", None)
+        return f"https://hardcover.app/@{user}" if user else "https://hardcover.app/"
+
+    def auto_home(self, section):
+        """The link the dashboard icon uses when you haven't set one: your profile there, else the homepage."""
+        if section == "hardcover":
+            return self.hardcover_home()
+        p = self.e.provider(section)
+        return p.home_url() if p else None
 
     def save_settings(self, body):
         changes, errors = [], []

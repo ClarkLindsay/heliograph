@@ -305,6 +305,16 @@ def test_settings_roundtrip():
             raw = json.dumps(s); assert "TOPSECRET" not in raw and '"pw"' not in raw                 # secrets never leave the server
             tok = [f for sec in s["sections"] if sec["section"] == "hardcover" for f in sec["fields"]][0]
             assert tok["set"] is True and "value" not in tok
+            # icon links: a blank one shows the link the icon uses automatically (profile, else homepage)
+            home = lambda st, sec: next(f for x in st["sections"] if x["section"] == sec for f in x["fields"] if f["key"] == "home_url")
+            assert home(s, "goodreads") == {"key": "home_url", "label": "Dashboard icon link", "kind": "str", "locked": False,
+                                            "value": "", "auto": "https://www.goodreads.com/"}
+            assert home(s, "hardcover")["auto"] == "https://hardcover.app/"
+            eng.state.set("profile_url:goodreads", "https://www.goodreads.com/user/show/5")
+            assert home(call(srv, "GET", "/api/settings")[1], "goodreads")["auto"] == "https://www.goodreads.com/user/show/5"
+            cfg["goodreads"]["home_url"] = "https://www.goodreads.com/mine"
+            assert "auto" not in home(call(srv, "GET", "/api/settings")[1], "goodreads")         # your own link: no auto
+            cfg["goodreads"]["home_url"] = ""
             code, r = call(srv, "POST", "/api/settings", {"common": {"poll_interval_minutes": 2, "progress_mode": "percent"},
                                                            "hardcover": {"token": ""}, "goodreads": {"cookie_refresh_url": " http://r:5080 "}})
             assert code == 200 and r["saved"] == 3 and cfg["common"]["poll_interval_minutes"] == 2
