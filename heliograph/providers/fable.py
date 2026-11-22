@@ -170,8 +170,11 @@ class Fable(Provider):
             "type": "multiselect", "book_id": remote_id, "book_list_ids": [], "exclude_from": list(ids.values())})
         if not (200 <= (code or 0) < 300):
             raise ProviderError(f"Fable remove -> HTTP {code}")
-        if self._status(remote_id) is not None:
-            raise ProviderError("Fable didn't confirm the removal")
+        for wait in (0, 2, 4, 8):                    # Fable takes a few seconds to show it
+            time.sleep(wait)
+            if self._status(remote_id) is None:
+                return True
+        raise ProviderError("Fable didn't confirm the removal")
         return True
 
     def set_status(self, remote_id, status, book):
