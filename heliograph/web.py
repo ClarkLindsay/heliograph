@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlparse
 from .accounts import AccountError, LoginThrottle, SESSION_DAYS
 from .config import APP_DIR, LOG_PATH
 from .engine import Busy
+from .providers.goodreads import REFRESHER_ACCOUNT
 
 INDEX = Path(__file__).with_name("web_index.html")
 LOGIN = Path(__file__).with_name("web_login.html")
@@ -38,6 +39,7 @@ SPEC = {
         ("enabled", "Sync to Goodreads", "bool"),
         ("cookie_refresh_url", "Cookie Auto-Refresh URL", "str"),
         ("cookie_refresh_token", "Cookie Auto-Refresh Token", "secret"),
+        ("cookie_refresh_account", "Cookie refresher account (its ACCOUNTS name; blank = default)", "str"),
         ("cookie", "Goodreads cookie (fallback)", "secret"),
         ("user_agent", "User-Agent override", "str"),
         ("request_delay_seconds", "Seconds between Goodreads requests (fewer WAF challenges)", "int"),
@@ -332,6 +334,10 @@ class Api:
                     val = str(val).strip()
                     if key == "home_url" and val and not re.match(r"^https?://\S+$", val):
                         raise ApiError(400, "The homepage link must start with http:// or https://")
+                    if key == "cookie_refresh_account":
+                        val = val.lower()
+                        if val and not REFRESHER_ACCOUNT.match(val):
+                            raise ApiError(400, "Refresher account names are lowercase letters, digits, - and _ (as in its ACCOUNTS)")
                 if self.cfg[sec][key] != val:
                     changes.append((sec, key, val))
         for sec, key, val in changes:
@@ -452,7 +458,15 @@ def make_handler(hub, cfg, server_log):
             if not hub.accounts.is_admin(user):
                 raise ApiError(403, "Only the admin can do that")
             if method == "GET" and path == "/api/admin/users":
-                return {"users": hub.accounts.users(), "invites": hub.accounts.invites(), "me": user}
+                url, _, admin_acct = hub.admin_refresher()
+                return {"users": hub.accounts.users(), "invites": hub.accounts.invites(), "me": user,
+                        "refresher": {"set": bool(url), "admin_account": admin_acct}}
+            if method == "POST" and path == "/api/admin/user/refresher":
+                try:
+                    hub.set_refresher_account(str(body.get("name") or ""), str(body.get("account") or ""))
+                except AccountError as e:
+                    raise ApiError(400, str(e))
+                return {"users": hub.accounts.users()}
             if method == "POST" and path == "/api/admin/invite":
                 code = hub.accounts.create_invite(user)
                 return {"code": code, "invites": hub.accounts.invites()}

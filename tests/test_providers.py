@@ -97,6 +97,44 @@ def test_goodreads_refresher_on_waf():
         assert seen[2][2] == "new=2"
 
 
+def test_goodreads_refresher_accounts():
+    """Multi-account cookie refresher: /accounts/<id>/cookie|refresh|health, one shared token."""
+    assert gr.account_url("http://r:5080/", "") == "http://r:5080" and gr.account_url("http://r:5080", "default") == "http://r:5080"
+    assert gr.account_url("http://r:5080", "Sam") == "http://r:5080/accounts/sam"
+    assert gr.account_url("http://r:5080/accounts/sam/", "other") == "http://r:5080/accounts/sam"    # URL already says which
+    with tempfile.TemporaryDirectory() as tmp:
+        c = cfg(tmp); c["goodreads"].update(enabled=True, cookie="", cookie_refresh_url="http://r:5080", cookie_refresh_token="T",
+                                            cookie_refresh_account="sam")
+        p = gr.Goodreads(c, LOG); seen = []
+        def fake(method, url, **kw):
+            seen.append((method, url, kw["headers"].get("X-Auth-Token")))
+            return Resp(200, "sam=1") if url.endswith("/cookie") or url.endswith("/refresh") else Resp(200, "csrf-token", url=url)
+        with mock.patch("requests.request", side_effect=fake):
+            p.check_auth()
+        assert seen[0] == ("GET", "http://r:5080/accounts/sam/cookie", "T") and c["goodreads"]["cookie"] == "sam=1"
+        # the admin's refresher, shared: the account the admin assigned, the admin's token
+        c["goodreads"].update(cookie="", cookie_refresh_url="", cookie_refresh_token="", cookie_refresh_account="")
+        p = gr.Goodreads(c, LOG); seen.clear()
+        p.shared_refresher = lambda: {"url": "http://admin-r:5080", "token": "ADMIN", "account": "bob"}
+        with mock.patch("requests.request", side_effect=fake):
+            p.check_auth()
+        assert seen[0] == ("GET", "http://admin-r:5080/accounts/bob/cookie", "ADMIN")
+        c["goodreads"]["cookie"] = ""; p = gr.Goodreads(c, LOG); seen.clear()
+        p.shared_refresher = lambda: {"error": "ask the admin to assign you an account"}
+        with mock.patch("requests.request", side_effect=fake):
+            try: p.check_auth(); assert False
+            except AuthError: pass
+        assert seen == []                                                         # nothing asked for
+        assert p.refresher_endpoint()[2] == "ask the admin to assign you an account"
+        # health line for the Test button, and hints for the refresher's errors
+        p.shared_refresher = lambda: {"url": "http://admin-r:5080", "token": "ADMIN", "account": "bob"}
+        with mock.patch("requests.get", return_value=Resp(200, {"account": "bob", "logged_in": False})):
+            assert "NOT logged in" in p.refresher_status() and "[ShelfSync: bob]" in p.refresher_status() and "shared" in p.refresher_status()
+        with mock.patch("requests.get", return_value=Resp(200, {"account": "bob", "logged_in": True})):
+            assert p.refresher_status() == "refresher account 'bob' logged in (shared by the admin)"
+        assert "several accounts" in gr.refresher_hint(Resp(400, "specify an account")) and "unknown refresher account" in gr.refresher_hint(Resp(404, "unknown account 'x'"))
+
+
 def test_goodreads_cools_down_after_uncleared_waf():
     with tempfile.TemporaryDirectory() as tmp:
         c = cfg(tmp); c["goodreads"].update(enabled=True, cookie="old=1", cookie_refresh_url="http://r:5080")
@@ -617,7 +655,7 @@ def test_env_overrides():
 
 
 ALL = [test_matching, test_page_mapping, test_goodreads_helpers, test_goodreads_refresher_on_waf,
-       test_goodreads_cools_down_after_uncleared_waf, test_goodreads_pacing_and_reuse,
+       test_goodreads_refresher_accounts, test_goodreads_cools_down_after_uncleared_waf, test_goodreads_pacing_and_reuse,
        test_goodreads_bootstraps_empty_cookie_from_refresher, test_goodreads_auth_failure_without_refresher,
        test_goodreads_writes_and_headers, test_goodreads_date_finished_flow, test_goodreads_finished_sessions_logic,
        test_storygraph_search_and_status_parsing, test_storygraph_edition_redirect_and_audio_refusal,

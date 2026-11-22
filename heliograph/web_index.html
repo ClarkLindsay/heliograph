@@ -65,9 +65,16 @@ function account(){const m=$('#main'),tok=tabToken;
  if(!me.admin){fill(m,pwCard);return}
  const users=h('div'),invs=h('div'),out=h('div'),code=h('div');
  const render=r=>{if(tok!==tabToken)return;
-  fill(users,h('table',{},h('tr',{},h('th',{},'User'),h('th',{},'Role'),h('th',{},'Since'),h('th',{})),
-   r.users.map(u=>h('tr',{},h('td',{},u.name),h('td',{},u.admin?'admin':'user'),h('td',{class:'small mut'},new Date(u.created*1000).toLocaleDateString()),
-    h('td',{style:'text-align:right'},u.name===r.me?null:delBtn(u.name))))));
+  const rf=r.refresher||{};
+  const refCell=u=>{if(!rf.set)return h('td',{class:'small mut'},'—');if(u.admin)return h('td',{class:'small mut'},`${rf.admin_account} (yours)`);
+   const i=h('input',{type:'text',id:'ref-'+u.name,value:u.refresher_account||'',placeholder:'none',style:'width:9em',autocapitalize:'none',spellcheck:'false'});
+   return h('td',{},h('div',{class:'row'},i,h('button',{class:'btn small',onclick:async()=>{try{await api('/api/admin/user/refresher',{name:u.name,account:i.value.trim()});
+    note(out,i.value.trim()?`${u.name} now uses refresher account '${i.value.trim().toLowerCase()}'. They log in to Goodreads in its noVNC window titled [ShelfSync: ${i.value.trim().toLowerCase()}].`:`${u.name} no longer uses your refresher.`,'good')}catch(e){note(out,e.message,'bad')}}},'Save')))};
+  fill(users,h('table',{},h('tr',{},h('th',{},'User'),h('th',{},'Role'),h('th',{},'Since'),h('th',{title:'Which account on your Goodreads cookie refresher this user gets'},'Refresher account'),h('th',{})),
+   r.users.map(u=>h('tr',{},h('td',{},u.name),h('td',{},u.admin?'admin':'user'),h('td',{class:'small mut'},new Date(u.created*1000).toLocaleDateString()),refCell(u),
+    h('td',{style:'text-align:right'},u.name===r.me?null:delBtn(u.name))))),
+   rf.set?h('p',{class:'small mut'},'Refresher account: a name from your cookie refresher’s ACCOUNTS list. Users without their own refresher get Goodreads cookies from yours, for that account only. Each user needs a different one, never yours.'):
+   h('p',{class:'small mut'},'Set up a Goodreads cookie refresher in Settings → Goodreads to share it with other users.'));
   fill(invs,r.invites.length?r.invites.map(i=>h('div',{class:'cand'},h('div',{class:'grow small'},`Invite …${i.id.slice(0,6)} by ${i.by} · expires ${new Date(i.expires*1000).toLocaleDateString()}`),
    h('button',{class:'btn small',onclick:async()=>{try{render(Object.assign(await api('/api/admin/users'),await api('/api/admin/invite/delete',{id:i.id})))}catch(e){note(out,e.message,'bad')}}},'Revoke'))):h('p',{class:'small mut'},'No unused invite codes.'))};
  const delBtn=name=>{const b=h('button',{class:'btn small danger',onclick:async()=>{

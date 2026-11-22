@@ -179,6 +179,36 @@ def test_accounts_invites_and_isolation():
             srv.stop()
 
 
+def test_sharing_the_admins_cookie_refresher():
+    with tempfile.TemporaryDirectory() as tmp:
+        hub, srv = make_hub(tmp)
+        try:
+            hub.register("alice", "alice-password", local=True); alice = hub.accounts.new_session("alice")
+            for n in ("bob", "carol"):
+                hub.register(n, n + "-password", code=hub.accounts.create_invite("alice"))
+            bob = hub.accounts.new_session("bob")
+            assert hub.shared_refresher("bob") is None                              # admin has no refresher yet
+            hub.runtime("alice").config["goodreads"].update(cookie_refresh_url="http://r:5080", cookie_refresh_token="T")
+            assert "ask the admin" in hub.shared_refresher("bob")["error"]          # nothing assigned yet
+            post = lambda body, who=alice: call(srv, "POST", "/api/admin/user/refresher", body, cookie=who)
+            assert post({"name": "bob", "account": "bob"}, who=bob)[0] == 403       # users can't pick their own
+            assert post({"name": "bob", "account": "default"})[0] == 400            # the admin's own account
+            assert post({"name": "bob", "account": "Not ok!"})[0] == 400
+            assert post({"name": "alice", "account": "x"})[0] == 400                # the admin uses Settings
+            assert post({"name": "bob", "account": "Bob"})[0] == 200
+            assert post({"name": "carol", "account": "bob"})[0] == 400              # one account per user
+            assert hub.shared_refresher("bob") == {"url": "http://r:5080", "token": "T", "account": "bob"}
+            u = call(srv, "GET", "/api/admin/users", cookie=alice)[1]
+            assert u["refresher"] == {"set": True, "admin_account": "default"} and [x["refresher_account"] for x in u["users"]] == ["", "bob", ""]
+            gr = next(p for p in hub.runtime("bob").engine.providers if p.key == "goodreads")
+            assert gr.shared_refresher()["account"] == "bob"                       # wired into bob's sync
+            hub.runtime("alice").config["goodreads"]["cookie_refresh_account"] = "bob"   # admin moves onto bob's
+            assert "admin's own" in hub.shared_refresher("bob")["error"]
+            assert '"T"' not in json.dumps(call(srv, "GET", "/api/settings", cookie=bob)[1])        # the admin's token never shows
+        finally:
+            srv.stop()
+
+
 def test_first_account_needs_this_machine_or_the_setup_code():
     from heliograph.crypto import hash_password
     with tempfile.TemporaryDirectory() as tmp:
@@ -444,6 +474,7 @@ def test_import_log_flagged_books_and_retry_failed():
 if __name__ == "__main__":
     for t in (test_push_all_and_import, test_icons, test_pages_security_and_status, test_accounts_invites_and_isolation,
               test_first_account_needs_this_machine_or_the_setup_code, test_existing_data_moves_to_the_first_account,
+              test_sharing_the_admins_cookie_refresher,
               test_link_flow, test_push_respects_sync_settings,
               test_settings_roundtrip, test_wake_and_refresh, test_old_database_is_upgraded, test_import_log_flagged_books_and_retry_failed):
         try: t()

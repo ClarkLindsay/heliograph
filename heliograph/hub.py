@@ -97,6 +97,10 @@ class Hub:
         except Exception as e:
             self.log.error("Couldn't load %s's settings: %s", name, e)
             return None
+        if not admin:                                            # may use the admin's cookie refresher, see shared_refresher
+            for p in rt.engine.providers:
+                if p.key == "goodreads":
+                    p.shared_refresher = lambda n=name: self.shared_refresher(n)
         with self.lock:
             self.runtimes[name] = rt
         if run_loop:
@@ -144,6 +148,37 @@ class Hub:
     def setup_code_hash(self):
         """The pre-0.4 web password (HELIOGRAPH__web__password), if set: it proves you own this install."""
         return (self.server["web"].get("password") or "").strip()
+
+    def admin_name(self):
+        return next((u["name"] for u in self.accounts.users() if u["admin"]), None)
+
+    def admin_refresher(self):
+        """(url, token, the admin's own account) of the admin's Goodreads cookie refresher, or (None, None, None)."""
+        rt = self.runtime(self.admin_name() or "")
+        gr = rt.config["goodreads"] if rt else {}
+        url = (gr.get("cookie_refresh_url") or "").strip()
+        if not url:
+            return None, None, None
+        return url, gr.get("cookie_refresh_token"), (gr.get("cookie_refresh_account") or "default").strip().lower()
+
+    def shared_refresher(self, name):
+        """For a non-admin user without their own refresher: the admin's, with the account the admin assigned them."""
+        url, token, admin_acct = self.admin_refresher()
+        if not url:
+            return None
+        acct = self.accounts.refresher_account(name)
+        if not acct:
+            return {"error": "no Cookie Auto-Refresh URL configured; ask the admin to assign you an account on their "
+                             "cookie refresher (Users tab), or set up your own"}
+        if acct == admin_acct:                                   # never hand out the admin's own Goodreads session
+            return {"error": "the refresher account assigned to you is the admin's own; ask the admin to change it"}
+        return {"url": url, "token": token, "account": acct}
+
+    def set_refresher_account(self, name, account):
+        _, _, admin_acct = self.admin_refresher()
+        if self.accounts.is_admin(name):
+            raise AccountError("The admin sets their own refresher in Settings → Goodreads")
+        self.accounts.set_refresher_account(name, account, admin_acct or "default")
 
     # ---- accounts
     def register(self, name, password, code="", local=False):

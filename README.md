@@ -443,6 +443,17 @@ How it's used:
 Alternatively, join the refresher's compose network and use its service name. Check which port it listens on inside
 its container.
 
+**Several people (multi-account refresher).** The refresher can keep several Goodreads logins: set
+`ACCOUNTS=default,sam,alex` in its `.env`, then log each one in to Goodreads in its own Chrome window on the noVNC page.
+The window titles show `[ShelfSync: <name>]`; switch with Alt+Tab.
+- **Your own refresher:** set **Cookie refresher account** (Settings → Goodreads) to your name from that list. Leave it
+  blank for `default`. Heliograph then uses `/accounts/<name>/cookie` and `/accounts/<name>/refresh`.
+- **Sharing the admin's refresher:** users with no refresher of their own get cookies from the admin's. The admin gives
+  each of them their account name in **Users → Refresher account**. Each user gets a different one, never the admin's.
+  Users can't pick it themselves: the refresher gives any account to anyone with its token, so letting users choose
+  would let one read another's Goodreads session. The admin's token is never shown to them.
+- **Test** next to Goodreads shows whether that refresher account is logged in.
+
 ## LibraryThing
 
 LibraryThing has no reading status or progress: a "status" is which collection a copy is in, plus its reading dates.

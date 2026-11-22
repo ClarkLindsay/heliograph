@@ -26,6 +26,28 @@ PAGE_TTL = 120             # a book page fetched for matching is reused by the r
 JSON = json.JSONDecoder()
 
 
+# ---------- cookie refresher (github.com/Lyfts/goodreads-cookie-refresher)
+REFRESHER_ACCOUNT = re.compile(r"^[a-z0-9][a-z0-9_-]{0,31}$")      # the refresher's own rule for ACCOUNTS names
+
+
+def account_url(base, account):
+    """The refresher's base URL for one account: /accounts/<id> in multi-account mode; blank or "default" = the
+    original single-account endpoints. A URL that already ends in /accounts/<id> is used as it is."""
+    base, acct = (base or "").strip().rstrip("/"), (account or "").strip().lower()
+    if not acct or acct == "default" or re.search(r"/accounts/[^/]+$", base):
+        return base
+    return f"{base}/accounts/{quote(acct, safe='')}"
+
+
+def refresher_hint(r):
+    body = (r.text or "").strip()[:200]
+    return {401: "check Cookie Auto-Refresh Token matches the refresher's REFRESHER_AUTH_TOKEN",
+            400: "the refresher has several accounts: set Cookie refresher account in Settings",
+            404: f"unknown refresher account or wrong URL ({body or 'not found'})",
+            503: "the refresher's browser isn't logged in to Goodreads for this account (log in via its noVNC page)",
+            }.get(r.status_code, "check the refresher logs")
+
+
 # ---------- small helpers (ported 1:1 where the plugin has an equivalent)
 def merge_cookies(header, new):
     jar = {}
@@ -342,11 +364,28 @@ class Goodreads(Provider):
                             f"trying again in {int(left // 60) + 1} min")
 
     # ---- cookie plumbing
+    shared_refresher = None     # set by the hub for non-admin users: () -> {"url", "token", "account"} | {"error"} | None
+
+    def refresher_endpoint(self):
+        """(base URL incl. /accounts/<id> if any, token, where it came from), or (None, None, reason).
+        Your own Cookie Auto-Refresh URL wins; otherwise the admin's refresher, with the account the admin assigned you
+        (the refresher can't tell callers apart, so users never pick that account themselves)."""
+        own = (self.cfg.get("cookie_refresh_url") or "").strip().rstrip("/")
+        if own:
+            return account_url(own, self.cfg.get("cookie_refresh_account")), self.cfg.get("cookie_refresh_token"), "yours"
+        shared = self.shared_refresher() if self.shared_refresher else None
+        if not shared:
+            return None, None, "no Cookie Auto-Refresh URL configured"
+        if shared.get("error"):
+            return None, None, shared["error"]
+        return account_url(shared["url"], shared["account"]), shared.get("token"), "shared"
+
     def _refresher(self, force):
-        base = (self.cfg.get("cookie_refresh_url") or "").rstrip("/")
+        base, tok, source = self.refresher_endpoint()
         if not base:
+            if source != "no Cookie Auto-Refresh URL configured":
+                self.log.warning("Goodreads cookie refresher: %s", source)
             return None
-        tok = self.cfg.get("cookie_refresh_token")
         url = base + ("/refresh" if force else "/cookie")
         try:
             r = requests.request("POST" if force else "GET", url, headers={"X-Auth-Token": tok} if tok else {},
@@ -356,10 +395,7 @@ class Goodreads(Provider):
             return None
         cookie = r.text.strip() if r.status_code == 200 else ""
         if not cookie:
-            hints = {401: "check Cookie Auto-Refresh Token matches REFRESHER_AUTH_TOKEN",
-                     404: "check the Cookie Auto-Refresh URL", 503: "the refresher's browser isn't logged in (noVNC)"}
-            self.log.warning("Goodreads refresher %s returned HTTP %s - %s", url, r.status_code,
-                             hints.get(r.status_code, "check the refresher logs"))
+            self.log.warning("Goodreads refresher %s returned HTTP %s - %s", url, r.status_code, refresher_hint(r))
             return None
         self.cfg["cookie"] = cookie
         self.config.save()
@@ -435,8 +471,8 @@ class Goodreads(Provider):
                     if mins:                              # stop instead of retrying into the same challenge
                         self._cooldown_until = time.monotonic() + mins * 60
                         self.log.warning("Goodreads: WAF challenge not cleared - leaving Goodreads alone for %g min", mins)
-                raise AuthError("Goodreads rejected the cookie (WAF challenge or signed out)"
-                                + ("" if self.cfg.get("cookie_refresh_url") else "; no Cookie Auto-Refresh URL configured"))
+                base, _, why = self.refresher_endpoint()
+                raise AuthError("Goodreads rejected the cookie (WAF challenge or signed out)" + ("" if base else f"; {why}"))
             is_redirect = r.status_code in (301, 302, 303, 307, 308) or (r.status_code == 200 and loc and loc != cur)
             if is_redirect and loc and hop < MAX_HOPS and meth in ("GET", "HEAD"):
                 nxt = urljoin(cur, loc)
@@ -478,10 +514,31 @@ class Goodreads(Provider):
         return m.group(1) if m else None
 
     # ---- lookup
+    def refresher_status(self):
+        """One line about the cookie refresher (for the Test button), or None if none is set up."""
+        base, tok, source = self.refresher_endpoint()
+        if not base:
+            return None if source == "no Cookie Auto-Refresh URL configured" else f"refresher: {source}"
+        try:
+            r = requests.get(base + "/health", headers={"X-Auth-Token": tok} if tok else {}, timeout=10)
+        except requests.RequestException as e:
+            return f"refresher unreachable ({e.__class__.__name__})"
+        if r.status_code != 200:
+            return f"refresher HTTP {r.status_code}: {refresher_hint(r)}"
+        try:
+            h = r.json()
+        except ValueError:
+            return "refresher answered, but not with its status"
+        who = h.get("account") or "default"
+        return (f"refresher account '{who}' logged in" if h.get("logged_in") else
+                f"refresher account '{who}' is NOT logged in: log in to Goodreads in its noVNC window "
+                f"titled [ShelfSync: {who}]") + (" (shared by the admin)" if source == "shared" else "")
+
     def check_auth(self):
         r = self._req("GET", BASE + "/review/list")
         if r.status_code == 200 and "csrf-token" in r.text:
-            return "Goodreads cookie OK"
+            extra = self.refresher_status()
+            return "Goodreads cookie OK" + (f"; {extra}" if extra else "")
         raise AuthError(f"Goodreads: unexpected response checking the session (HTTP {r.status_code})")
 
     def _book_page(self, book_id, keep=False):

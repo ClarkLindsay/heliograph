@@ -18,6 +18,7 @@ DEFAULTS = {
         "cookie": "",                 # full Cookie header; blank = pulled from the refresher
         "cookie_refresh_url": "",     # base URL of goodreads-cookie-refresher
         "cookie_refresh_token": "",   # REFRESHER_AUTH_TOKEN, if set
+        "cookie_refresh_account": "", # the refresher's account id (its ACCOUNTS list); blank = its default account
         "user_agent": "",             # blank = same Firefox UA ShelfSync uses
         "request_delay_seconds": 3,   # minimum gap between Goodreads requests; bursts are what trigger WAF challenges
         "waf_cooldown_minutes": 15,   # after a challenge the refresher can't clear, leave Goodreads alone this long

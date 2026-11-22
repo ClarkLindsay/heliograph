@@ -51,8 +51,29 @@ class Accounts:
         return bool(self.data["users"])
 
     def users(self):
-        return [{"name": n, "admin": bool(u.get("admin")), "created": u.get("created", 0)}
-                for n, u in sorted(self.data["users"].items())]
+        return [{"name": n, "admin": bool(u.get("admin")), "created": u.get("created", 0),
+                 "refresher_account": u.get("refresher_account", "")} for n, u in sorted(self.data["users"].items())]
+
+    def refresher_account(self, name):
+        return self.data["users"].get(name, {}).get("refresher_account", "")
+
+    def set_refresher_account(self, name, account, admin_account=""):
+        """The admin's Goodreads cookie refresher account this user may use ("" = none). Unique per user, and never
+        the admin's own: the refresher hands any caller with its token any account, so users can't choose."""
+        acct = (account or "").strip().lower()
+        with self.lock:
+            if name not in self.data["users"]:
+                raise AccountError("No such user")
+            if acct:
+                if not re.match(r"^[a-z0-9][a-z0-9_-]{0,31}$", acct):
+                    raise AccountError("Refresher account names are lowercase letters, digits, - and _ (as in its ACCOUNTS)")
+                if acct == (admin_account or "default") or acct == "default":
+                    raise AccountError("That's the admin's own refresher account")
+                taken = [n for n, u in self.data["users"].items() if n != name and u.get("refresher_account") == acct]
+                if taken:
+                    raise AccountError(f"'{acct}' is already assigned to {taken[0]}")
+            self.data["users"][name]["refresher_account"] = acct
+            self._save()
 
     def exists(self, name):
         return name in self.data["users"]
