@@ -6,7 +6,7 @@ from . import firebase
 from .base import Provider, AuthError, ProviderError, Match, mapped_page, clean_cover
 
 API = "https://prod-pagebound-api.onrender.com"
-FIREBASE_KEY = "AIzaSyDCfBJ51pRZgHueBfBz0KNDiPNev1ClnGg"
+FIREBASE_KEY = "AIzaSyDCfBJ51pRZgHueBfBz0KNDiPNev1ClnGg"   # Pagebound's public Firebase web key (shipped to every browser; not a secret)
 TYPESENSE_URL = "https://hztadco4ku1vqi6lp.a1.typesense.net"
 TYPESENSE_KEY = "SgSrp2Vx4V4wjJAwnME6uWUufNdi9BxM"
 SIGN_IN = "https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword"

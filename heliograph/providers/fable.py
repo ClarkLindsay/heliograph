@@ -6,7 +6,7 @@ from urllib.parse import quote
 from .base import Provider, AuthError, ProviderError, Match, mapped_page, clean_cover
 
 API = "https://api.fable.co"
-FIREBASE_KEY = "AIzaSyDEnLDTjMQ9v-XaQ7pk6pJxKrpVbX_rr6U"      # public web key the Fable app ships with
+FIREBASE_KEY = "AIzaSyDEnLDTjMQ9v-XaQ7pk6pJxKrpVbX_rr6U"      # Fable's public Firebase web key (shipped to every browser; not a secret)
 SIGN_IN = "https://www.googleapis.com/identitytoolkit/v3/relyingparty/verifyPassword"
 SYSTEM_TYPE = {"want": "want_to_read", "reading": "current_reading", "read": "finished", "dnf": "did_not_finish"}
 STATUS_BY_TYPE = {v: k for k, v in SYSTEM_TYPE.items()}
