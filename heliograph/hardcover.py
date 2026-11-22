@@ -16,6 +16,7 @@ UB_FIELDS = """
   book { id title pages contributions { contribution author { name } } }
   edition { reading_format_id audio_seconds }
   user_book_reads(order_by: {id: desc}, limit: 1) { id progress_pages progress_seconds started_at finished_at }
+  last_finished: user_book_reads(where: {finished_at: {_is_null: false}}, order_by: {finished_at: desc}, limit: 1) { finished_at }
 """
 
 
@@ -75,7 +76,7 @@ def book_from_ub(ub: dict) -> Book:
         status=STATUS.get(ub.get("status_id")), pages=read.get("progress_pages"),
         total_pages=book.get("pages") or None, rating=ub.get("rating"),
         book_id=ub.get("book_id"), edition_id=ub.get("edition_id"),
-        finished_on=(read.get("finished_at") or None),
+        finished_on=(read.get("finished_at") or ((ub.get("last_finished") or [{}])[0].get("finished_at")) or None),
         audio=(ub.get("edition") or {}).get("reading_format_id") == AUDIO_FORMAT,
         seconds=read.get("progress_seconds"), total_seconds=(ub.get("edition") or {}).get("audio_seconds") or None,
     )
