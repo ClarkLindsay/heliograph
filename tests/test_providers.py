@@ -598,6 +598,18 @@ def test_fable_flow():
         assert post[1][2]["selected_mode"] == "page_count" and post[1][2]["current_page"] == 128 and post[1][2]["page_count"] == 320
         assert post[2][2]["selected_mode"] == "percentage" and post[2][2]["current_percentage"] == 40
         assert post[3][1] == "/api/books/B1/reviews" and post[3][2]["rating"] == 4.5
+        calls.clear()                                              # already reviewed: the review is updated in place
+        def reviewed(method, url, **kw):
+            if url.endswith("/reviews/B2") and method == "GET":
+                return Resp(200, {"id": "R9", "rating": "4.00", "review": "Good", "labels": ["x"]})
+            return fake(method, url, **kw)
+        with mock.patch("requests.request", side_effect=reviewed):
+            p.set_rating("B2", 5, b)
+        assert [(m, u) for m, u, _ in calls if m != "GET"] == [("PATCH", "/api/books/B2/reviews/R9")]
+        assert calls[-1][2]["rating"] == 5.0 and calls[-1][2]["review"] == "Good" and calls[-1][2]["labels"] == ["x"]
+        with mock.patch("requests.request", side_effect=reviewed):
+            assert p.read_state("B2")["rating"] == 4.0                 # Fable's rating is a string
+            assert p.read_state("B1")["rating"] is None                # not reviewed
 
 
 def test_pagebound_flow():

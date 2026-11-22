@@ -140,8 +140,12 @@ class Fable(Provider):
     def read_state(self, remote_id):
         state = {"status": self._status(remote_id), "rating": None, "finished_dates": set(), "known": {"rating"}}
         code, ex = self._req(f"/api/users/{self._uid()}/reviews/{remote_id}")
-        if code == 200 and isinstance(ex, dict) and isinstance(ex.get("rating"), (int, float)) and ex["rating"] > 0:
-            state["rating"] = float(ex["rating"])
+        if code == 200 and isinstance(ex, dict):
+            try:
+                rating = float(ex.get("rating") or 0)                # Fable sends it as a string: "4.00"
+            except (TypeError, ValueError):
+                rating = 0
+            state["rating"] = rating if rating > 0 else None
         elif code not in (200, 404):
             raise ProviderError(f"Fable: couldn't read your review (HTTP {code})")
         return state
@@ -204,8 +208,11 @@ class Fable(Provider):
         if code not in (200, 404):
             raise ProviderError(f"Fable: couldn't load existing review (HTTP {code})")
         ex = ex if code == 200 and ex else {}
-        code, _ = self._req(f"/api/books/{remote_id}/reviews", "POST", {
-            "rating": float(rating), "labels": ex.get("labels") or [], "review": ex.get("review") or "",
-            "contains_spoilers": bool(ex.get("contains_spoilers")), "did_not_finish": bool(ex.get("did_not_finish"))})
+        body = {"rating": float(rating), "labels": ex.get("labels") or [], "review": ex.get("review") or "",
+                "contains_spoilers": bool(ex.get("contains_spoilers")), "did_not_finish": bool(ex.get("did_not_finish"))}
+        if ex.get("id"):            # already reviewed: Fable refuses a second POST, the review itself is updated
+            code, _ = self._req(f"/api/books/{remote_id}/reviews/{ex['id']}", "PATCH", body)
+        else:
+            code, _ = self._req(f"/api/books/{remote_id}/reviews", "POST", body)
         if not (code and 200 <= code < 300):
             raise ProviderError(f"Fable rating -> HTTP {code}")
