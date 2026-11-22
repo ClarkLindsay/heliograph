@@ -87,7 +87,8 @@ def main():
     ap.add_argument("--init", action="store_true", help="write a default config.json and exit")
     ap.add_argument("--healthcheck", action="store_true", help="exit 0 if the loop has completed a cycle recently")
     ap.add_argument("--user", help="with --check / --once / --inspect: which user (default: the admin)")
-    ap.add_argument("--reset-password", metavar="NAME", help="set a new web UI password for an account (prompted, hidden)")
+    ap.add_argument("--reset-password", dest="reset_user", metavar="NAME",
+                    help="set a new web UI password for the account NAME (prompted, hidden)")
     a = ap.parse_args()
     if a.healthcheck:
         sys.exit(healthcheck())
@@ -108,10 +109,10 @@ def main():
     APP_DIR.mkdir(parents=True, exist_ok=True)
     if a.init:
         return
-    if a.reset_password:
+    if a.reset_user:
         import getpass
         from .accounts import Accounts, AccountError
-        acc, name = Accounts(APP_DIR / "users.json"), a.reset_password.strip().lower()
+        acc, name = Accounts(APP_DIR / "users.json"), a.reset_user.strip().lower()
         if not acc.exists(name):
             sys.exit(f"No account '{name}'. Accounts: {', '.join(u['name'] for u in acc.users()) or 'none yet'}")
         pw = getpass.getpass("New password (input hidden): ") if sys.stdin.isatty() else sys.stdin.readline().rstrip("\r\n")
