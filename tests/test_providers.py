@@ -80,7 +80,7 @@ def test_goodreads_helpers():
 
 
 def test_goodreads_refresher_on_waf():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c = cfg(tmp); c["goodreads"].update(enabled=True, cookie="old=1", cookie_refresh_url="http://host.docker.internal:5080/", cookie_refresh_token="T")
         p = gr.Goodreads(c, LOG); seen = []
         def fake(method, url, **kw):
@@ -102,7 +102,7 @@ def test_goodreads_refresher_accounts():
     assert gr.account_url("http://r:5080/", "") == "http://r:5080" and gr.account_url("http://r:5080", "default") == "http://r:5080"
     assert gr.account_url("http://r:5080", "Sam") == "http://r:5080/accounts/sam"
     assert gr.account_url("http://r:5080/accounts/sam/", "other") == "http://r:5080/accounts/sam"    # URL already says which
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c = cfg(tmp); c["goodreads"].update(enabled=True, cookie="", cookie_refresh_url="http://r:5080", cookie_refresh_token="T",
                                             cookie_refresh_account="sam")
         p = gr.Goodreads(c, LOG); seen = []
@@ -137,7 +137,7 @@ def test_goodreads_refresher_accounts():
 
 def test_profile_links():
     """Dashboard icons open your profile: worked out from each service's session, only ever into its own site."""
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c = cfg(tmp)
         c["goodreads"].update(enabled=True, cookie="a=1"); c["storygraph"].update(enabled=True, session_cookie="S")
         c["fable"].update(id_token="I", refresh_token="R", token_expires_at=time.time() + 3000, user_id="U")
@@ -168,7 +168,7 @@ def test_profile_links():
 
 
 def test_goodreads_cools_down_after_uncleared_waf():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c = cfg(tmp); c["goodreads"].update(enabled=True, cookie="old=1", cookie_refresh_url="http://r:5080")
         p = gr.Goodreads(c, LOG); seen = []
         def fake(method, url, **kw):
@@ -184,7 +184,7 @@ def test_goodreads_cools_down_after_uncleared_waf():
 
 
 def test_goodreads_pacing_and_reuse():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c = cfg(tmp); c["goodreads"].update(enabled=True, cookie="a=1", request_delay_seconds=3)
         p = gr.Goodreads(c, LOG); urls, slept = [], []
         def fake(method, url, **kw):
@@ -200,7 +200,7 @@ def test_goodreads_pacing_and_reuse():
 
 
 def test_goodreads_bootstraps_empty_cookie_from_refresher():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c = cfg(tmp); c["goodreads"].update(enabled=True, cookie="", cookie_refresh_url="http://r:5080")
         p = gr.Goodreads(c, LOG); seen = []
         def fake(method, url, **kw):
@@ -212,7 +212,7 @@ def test_goodreads_bootstraps_empty_cookie_from_refresher():
 
 
 def test_goodreads_auth_failure_without_refresher():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c = cfg(tmp); c["goodreads"].update(enabled=True, cookie="a=1")
         p = gr.Goodreads(c, LOG)
         with mock.patch("requests.request", return_value=Resp(302, "", {"location": "https://www.goodreads.com/user/sign_in"})):
@@ -221,7 +221,7 @@ def test_goodreads_auth_failure_without_refresher():
 
 
 def test_goodreads_writes_and_headers():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c = cfg(tmp); c["goodreads"].update(enabled=True, cookie="a=1")
         p = gr.Goodreads(c, LOG); calls = []
         def fake(method, url, **kw):
@@ -249,7 +249,7 @@ def _flight_page(sessions, chunk=True):
 
 
 def test_goodreads_date_finished_flow():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c = cfg(tmp); c["goodreads"].update(enabled=True, cookie="a=1")
         p = gr.Goodreads(c, LOG); state = {"saved": None, "gets": 0}
         action = "ab" * 20
@@ -308,7 +308,7 @@ def test_storygraph_search_and_status_parsing():
     assert [(r["id"], r["format"]) for r in res] == [("aaa-1", "Audio"), ("bbb-2", "Paperback")]   # audio kept, marked
     assert res[1]["authors"] == ["J.R.R. Tolkien"] and res[1]["pages"] == 310
     assert res[1]["cover"] == "https://app.thestorygraph.com/covers/bbb-2.jpg"
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c = cfg(tmp); c["storygraph"].update(enabled=True, session_cookie="S")
         with mock.patch("requests.request", return_value=Resp(200, SEARCH_HTML)):
             assert [r["id"] for r in sg.StoryGraph(c, LOG).search("hobbit")] == ["bbb-2", "aaa-1"]   # wanted editions first
@@ -318,7 +318,7 @@ def test_storygraph_search_and_status_parsing():
 
 
 def test_storygraph_edition_redirect_and_audio_refusal():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c = cfg(tmp); c["storygraph"].update(enabled=True, session_cookie="S", remember_user_token="R")
         p = sg.StoryGraph(c, LOG)
         pages = {"/books/one": _page(None, other="two", rid="one"), "/books/two": _page("Currently Reading", 500, rid="two"),
@@ -348,7 +348,7 @@ def _editions(rows):
 
 
 def test_storygraph_picks_the_right_edition():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c = cfg(tmp); c["storygraph"].update(enabled=True, session_cookie="S", remember_user_token="R")
         p = sg.StoryGraph(c, LOG); posts = []
         pages = {
@@ -391,7 +391,7 @@ def test_storygraph_picks_the_right_edition():
 
 def test_audiobook_books_get_audiobook_editions():
     """Your Hardcover edition is an audiobook ("Listened"): prefer an audiobook edition, fall back to print."""
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c = cfg(tmp); c["storygraph"].update(enabled=True, session_cookie="S", remember_user_token="R")
         p = sg.StoryGraph(c, LOG)
         pages = {
@@ -485,7 +485,7 @@ def test_hardcover_edition_cleanup_and_set_edition():
 
 def test_state_keeps_audio_and_upgrades_old_databases():
     import sqlite3
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         path = os.path.join(tmp, "s.db")
         db = sqlite3.connect(path)                                   # a 0.2.0 database: no audio column
         db.execute("""create table books(ub_id integer primary key, title text, authors text, status text, pages integer,
@@ -498,7 +498,7 @@ def test_state_keeps_audio_and_upgrades_old_databases():
 
 
 def test_edition_problem_rules():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         p = sg.StoryGraph(cfg(tmp), LOG)
         assert p.edition_problem("English", "Paperback") is None
         assert p.edition_problem("Not specified", "Hardcover") is None and p.edition_problem("", "") is None   # unknown passes
@@ -508,7 +508,7 @@ def test_edition_problem_rules():
 
 
 def test_goodreads_and_fable_refuse_wrong_editions():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c = cfg(tmp); c["goodreads"].update(enabled=True, cookie="a=1")
         g = gr.Goodreads(c, LOG)
         def apollo(lang, fmt):
@@ -536,7 +536,7 @@ def test_goodreads_and_fable_refuse_wrong_editions():
 
 
 def test_storygraph_writes():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c = cfg(tmp); c["storygraph"].update(enabled=True, session_cookie="S", remember_user_token="R")
         p = sg.StoryGraph(c, LOG); calls = []
         review_form = ('<form action="/reviews/9" method="post"><input type="hidden" name="_method" value="patch">'
@@ -573,7 +573,7 @@ def test_storygraph_form_roundtrip():
 
 # ------------------------------------------------------------------ fable / pagebound
 def test_fable_flow():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c = cfg(tmp); c["fable"].update(enabled=True, id_token="J", refresh_token="R", token_expires_at=time.time() + 3000, user_id="U1")
         p = fb.Fable(c, LOG); calls = []
         def fake(method, url, **kw):
@@ -601,7 +601,7 @@ def test_fable_flow():
 
 
 def test_pagebound_flow():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c = cfg(tmp); c["pagebound"].update(enabled=True, id_token="I", refresh_token="R", api_token="A", token_expires_at=time.time() + 3000)
         p = pb.Pagebound(c, LOG); calls = []; state = {"has": False}
         def fake(method, url, **kw):
@@ -627,7 +627,7 @@ def test_pagebound_flow():
 
 
 def test_pagebound_search_candidates():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c = cfg(tmp); c["pagebound"].update(enabled=True)
         p = pb.Pagebound(c, LOG)
         hit = {"hits": [{"document": {"id": 5, "uuid": "UU", "title": "The Hobbit", "author_name": "J.R.R. Tolkien", "page_count": 310}}]}
@@ -647,7 +647,7 @@ def test_pagebound_search_candidates():
 
 
 def test_pagebound_link_from_url():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c = cfg(tmp); c["pagebound"].update(enabled=True, id_token="I", refresh_token="R", api_token="A", token_expires_at=time.time() + 3000)
         p = pb.Pagebound(c, LOG)
         u = "8804d280-1d5a-4f53-8f31-d46b4d4d81b2"
@@ -668,7 +668,7 @@ def test_pagebound_link_from_url():
 
 # ------------------------------------------------------------------ config
 def test_env_overrides():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         path = os.path.join(tmp, "c.json")
         c = Config(path); c["hardcover"]["token"] = "filetoken"; c.save()
         os.environ.update({"HELIOGRAPH__hardcover__token": "envtoken", "HELIOGRAPH__goodreads__enabled": "true",

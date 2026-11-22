@@ -43,7 +43,7 @@ def test_helpers():
 
 
 def test_search_isbn_and_title():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c, p = provider(tmp)
         row = ('<tr><p class="item"><a data-workid="700">The Hobbit</a> by <a href="/a/T">J.R.R. Tolkien</a></p></tr>')
         body = json.dumps({"text": base64.b64encode(f"<table>{row}</table>".encode()).decode()})
@@ -58,7 +58,7 @@ def test_search_isbn_and_title():
 
 
 def test_set_status_read_and_rating():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c, p = provider(tmp)
         p._remember("700", title="The Hobbit", author="Tolkien, J.R.R.")
         posts, mem = [], {"cols": {7}, "rows": {1: ("2026-01-01", "")}}
@@ -98,14 +98,14 @@ def test_set_status_read_and_rating():
 
 
 def test_start_reading_adds_start_date_and_to_read():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c, p = provider(tmp, read_collection_id=5)
         assert p._read_collection_id() == 5 and p._add_collection_ids("read") == [5]
         assert p._add_collection_ids("reading") == [1, 7] and p._add_collection_ids("want") == [1, 3]
 
 
 def test_relogin_on_expired_session():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c, p = provider(tmp, username="bob", password="pw")
         state = {"n": 0}
         def fake(method, url, **kw):
@@ -120,7 +120,7 @@ def test_relogin_on_expired_session():
 
 
 def test_expired_without_password_and_cloudflare():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c, p = provider(tmp)
         with mock.patch("requests.request", return_value=Resp(401)):
             try: p.check_auth(); assert False

@@ -39,7 +39,7 @@ def make(tmp, initial="baseline", dry=False):
 
 
 def test_flow():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         hc, p, eng = make(tmp)
         hc.lib[1] = Book(1, "Old", status="reading", pages=10, total_pages=100)
         assert eng.run_once() == 0 and p.calls == []          # baseline pushes nothing
@@ -62,7 +62,7 @@ def test_flow():
 
 
 def test_failed_update_is_retried_even_outside_the_window():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         hc, p, eng = make(tmp)
         hc.lib[1] = Book(1, "A", status="reading", pages=5, total_pages=100)
         eng.run_once()                                         # baseline
@@ -76,7 +76,7 @@ def test_failed_update_is_retried_even_outside_the_window():
 
 
 def test_per_book_error_does_not_block_others_and_holds_window():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         hc, p, eng = make(tmp, "import_all")
         hc.lib[1] = Book(1, "A", status="read"); hc.lib[2] = Book(2, "B", status="read")
         orig = p.set_status
@@ -89,7 +89,7 @@ def test_per_book_error_does_not_block_others_and_holds_window():
 
 
 def test_steps_and_throttle():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         hc, p, eng = make(tmp, "import_all")
         eng.config["common"]["progress_step_pages"] = 10
         hc.lib[1] = Book(1, "A", status="reading", pages=5, total_pages=300)
@@ -99,7 +99,7 @@ def test_steps_and_throttle():
 
 
 def test_import_all_and_want_filter():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         hc, p, eng = make(tmp, "import_all")
         eng.config["common"]["sync_want_to_read"] = False
         hc.lib[1] = Book(1, "A", status="want"); hc.lib[2] = Book(2, "B", status="read", rating=5)
@@ -108,7 +108,7 @@ def test_import_all_and_want_filter():
 
 
 def test_new_service_gets_own_baseline():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         hc, p, eng = make(tmp)
         hc.lib[1] = Book(1, "A", status="reading", pages=3)
         eng.run_once()
@@ -120,7 +120,7 @@ def test_new_service_gets_own_baseline():
 
 
 def test_dry_run_changes_nothing():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         hc, p, eng = make(tmp, "import_all", dry=True)
         hc.lib[1] = Book(1, "A", status="read", rating=4)
         eng.run_once()
@@ -128,7 +128,7 @@ def test_dry_run_changes_nothing():
 
 
 def test_link_is_remembered_and_unmatched_is_throttled():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         hc, p, eng = make(tmp, "import_all")
         hc.lib[1] = Book(1, "A", status="reading", pages=3, total_pages=10)
         eng.run_once(); hc.lib[1].pages = 5; eng.run_once()
@@ -142,7 +142,7 @@ def test_link_is_remembered_and_unmatched_is_throttled():
 
 
 def test_status_only_provider_gets_no_progress():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         hc, p, eng = make(tmp, "import_all")
         p.tracks_progress = False
         hc.lib[1] = Book(1, "A", status="reading", pages=5, total_pages=100)
@@ -156,7 +156,7 @@ def test_stuck_service_does_not_block_the_others():
     import threading
     from heliograph import engine as engine_mod
     from heliograph.engine import Busy
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         hc, p, eng = make(tmp, "import_all")
         q = Fake(eng.config, eng.log); q.key, q.label = "storygraph", "StoryGraph"
         eng.config["storygraph"]["enabled"] = True
@@ -192,7 +192,7 @@ def test_stuck_service_does_not_block_the_others():
 def test_editions_check_and_fix():
     import time as _t
     from heliograph.providers.base import Match
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         hc, p, eng = make(tmp, "import_all")
         q = Fake(eng.config, eng.log); q.key, q.label = "storygraph", "StoryGraph"
         eng.config["storygraph"]["enabled"] = True; eng.providers.append(q)
@@ -230,7 +230,7 @@ def test_editions_check_and_fix():
 
 
 def test_books_removed_from_hardcover():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         hc, p, eng = make(tmp, "import_all")
         p.CAN_REMOVE = True; removed = []; fail = {"on": False}
         def rm(rid):
@@ -278,7 +278,7 @@ def test_books_removed_from_hardcover():
 
 
 def test_profile_links_are_refreshed_weekly():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         hc, p, eng = make(tmp)
         p.HOME = "https://www.goodreads.com/"; asked = []
         p.profile_url = lambda: asked.append(1) or "https://www.goodreads.com/user/show/9"
@@ -307,7 +307,7 @@ def test_parse():
 
 
 def test_audiobook_progress_is_sent_as_percent():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         hc, p, eng = make(tmp)
         hc.lib[1] = Book(1, "Listen", status="reading", audio=True, seconds=0, total_seconds=36000)
         eng.run_once()                                         # baseline

@@ -8,7 +8,7 @@ assert Crypto("my passphrase").decrypt(Crypto("my passphrase").encrypt("x")) == 
 try: Crypto(generate_key()).decrypt(t); assert False
 except CryptoError: pass
 h = hash_password("pw"); assert verify_password("pw", h) and not verify_password("no", h) and verify_password("plain", "plain")
-with tempfile.TemporaryDirectory() as tmp:
+with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
     path = os.path.join(tmp, "c.json")
     plain = Config(path, Crypto(None) if False else Crypto("")); plain.data["fable"]["password"] = "pw"; plain.save()
     assert json.load(open(path))["fable"]["password"] == "pw" and plain._plaintext_on_disk == 1
@@ -25,7 +25,7 @@ with tempfile.TemporaryDirectory() as tmp:
     finally:
         del os.environ["HELIOGRAPH__hardcover__token"], os.environ["HELIOGRAPH__goodreads__cookie_refresh_token_FILE"]
 import heliograph.crypto as cr
-with tempfile.TemporaryDirectory() as tmp:
+with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
     f = os.path.join(tmp, "key"); os.environ["HELIOGRAPH_KEY_FILE"] = f
     try:
         open(f, "w").write("")

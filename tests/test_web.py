@@ -97,7 +97,7 @@ def setup(tmp):
 
 
 def test_pages_security_and_status():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         cfg, hc, p, eng, srv = setup(tmp)
         try:
             code, body = call(srv, "GET", "/"); assert code == 200 and b"Heliograph" in body and b"/api/me" in body   # the app
@@ -128,7 +128,7 @@ def test_pages_security_and_status():
 
 def test_accounts_invites_and_isolation():
     books = lambda name: {"alice": [Book(1, "Dune", status="reading")], "bob": [Book(7, "Bob's book", status="read")]}.get(name, [])
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         hub, srv = make_hub(tmp, books=books)
         try:
             # first account: from this machine (Host 127.0.0.1) it becomes the admin
@@ -180,7 +180,7 @@ def test_accounts_invites_and_isolation():
 
 
 def test_sharing_the_admins_cookie_refresher():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         hub, srv = make_hub(tmp)
         try:
             hub.register("alice", "alice-password", local=True); alice = hub.accounts.new_session("alice")
@@ -211,7 +211,7 @@ def test_sharing_the_admins_cookie_refresher():
 
 def test_first_account_needs_this_machine_or_the_setup_code():
     from heliograph.crypto import hash_password
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         hub, srv = make_hub(tmp, setup_password=hash_password("old-web-password"))
         try:
             st = call(srv, "GET", "/auth/state", cookie="", host="books.example.com")[1]
@@ -229,7 +229,7 @@ def test_first_account_needs_this_machine_or_the_setup_code():
 def test_existing_data_moves_to_the_first_account():
     """A pre-0.4 install (config.json + state.db in the data folder) is kept and handed to the first account."""
     from heliograph.hub import default_factory
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c = Config(os.path.join(tmp, "config.json")); c["common"]["poll_interval_minutes"] = 7; c.save()
         s = State(os.path.join(tmp, "state.db")); s.save_link(1, "goodreads", remote_id="77"); s.db.close()
         server = Config(os.path.join(tmp, "server.json"), env=False)
@@ -251,7 +251,7 @@ def test_existing_data_moves_to_the_first_account():
 
 
 def test_link_flow():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         cfg, hc, p, eng, srv = setup(tmp)
         try:
             eng.run_once(); hc.lib[1].pages = 120; eng.run_once()
@@ -284,7 +284,7 @@ def test_link_flow():
 
 
 def test_push_respects_sync_settings():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         cfg, hc, p, eng, srv = setup(tmp)
         try:
             hc.lib[3] = Book(3, "Wish", status="want"); eng.run_once()
@@ -297,7 +297,7 @@ def test_push_respects_sync_settings():
 
 
 def test_settings_roundtrip():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         cfg, hc, p, eng, srv = setup(tmp)
         cfg["hardcover"]["token"] = "TOPSECRET"; cfg["fable"].update(email="a@b.c", password="pw", id_token="tok", refresh_token="r")
         try:
@@ -341,7 +341,7 @@ def test_settings_roundtrip():
 
 
 def test_wake_and_refresh():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         cfg, hc, p, eng, srv = setup(tmp)
         try:
             assert call(srv, "POST", "/api/refresh-library")[1]["books"] == 2 and eng.state.book_count() == 2
@@ -354,7 +354,7 @@ def test_wake_and_refresh():
 
 def test_old_database_is_upgraded():
     import sqlite3
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         path = os.path.join(tmp, "s.db"); db = sqlite3.connect(path)
         db.executescript("""create table links(ub_id integer, service text, remote_id text, remote_pages integer, status text,
             pages integer, rating real, pushed_at real default 0, link_failed_at real default 0, primary key(ub_id, service));
@@ -366,7 +366,7 @@ def test_old_database_is_upgraded():
 
 
 def test_push_all_and_import():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         cfg, hc, p, eng, srv = setup(tmp)
         try:
             eng.run_once()
@@ -411,7 +411,7 @@ def test_push_all_and_import():
 
 def test_icons():
     import heliograph.web as web
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         cfg, hc, p, eng, srv = setup(tmp)
         old = web.APP_DIR; web.APP_DIR = type(old)(tmp)
         try:
@@ -441,7 +441,7 @@ def test_import_log_flagged_books_and_retry_failed():
     import heliograph.engine as E
     from pathlib import Path
     E.IMPORT_RETRY_DELAYS = E.IMPORT_AUTH_DELAYS = (0, 0); E.IMPORT_ROUND_WAIT = 0; E.IMPORT_ROUNDS = 1
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         cfg, hc, p, eng, srv = setup(tmp)
         eng.import_dir = Path(tmp) / "imports"
         try:

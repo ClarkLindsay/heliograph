@@ -59,7 +59,7 @@ def bk(i, status="reading"): return Book(i, "Book %d" % i, authors=["A"], status
 
 
 def test_transient_error_is_retried_and_logged():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         eng, p = make(tmp, [bk(1)], fail_first=1)
         eng.start_import(); job = wait(eng)
         assert job["errors"] == 0 and p.calls == [("R1", "reading")] and job["pushed"] >= 1
@@ -69,7 +69,7 @@ def test_transient_error_is_retried_and_logged():
 
 
 def test_failure_survives_main_pass_then_succeeds_in_a_retry_round():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         eng, p = make(tmp, [bk(1)], fail_first=3)                  # first item: 1 try + 2 retries all fail
         eng.start_import(); job = wait(eng)
         assert job["errors"] == 0 and p.calls == [("R1", "reading")]
@@ -79,7 +79,7 @@ def test_failure_survives_main_pass_then_succeeds_in_a_retry_round():
 
 
 def test_persistent_failure_is_listed_and_retry_failed_reruns_only_it():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         eng, p = make(tmp, [bk(1), bk(2)], fail_first=10**6, auth_ok=False)
         E.IMPORT_ROUNDS = 1
         try:
@@ -96,7 +96,7 @@ def test_persistent_failure_is_listed_and_retry_failed_reruns_only_it():
 
 
 def test_login_circuit_breaker_pauses_a_dead_service():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         books = [bk(i) for i in range(1, 9)]
         eng, p = make(tmp, books, fail_first=10**6, exc=AuthError("cookie dead"), auth_ok=False)
         eng.start_import(); job = wait(eng)
@@ -107,7 +107,7 @@ def test_login_circuit_breaker_pauses_a_dead_service():
 
 def test_unmatched_books_are_flagged_even_in_a_preview():
     from heliograph.web import link_view
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         eng, p = make(tmp, [bk(1), bk(2, "read")], matches=False)
         eng.start_import(dry=True); job = wait(eng)
         assert job["nomatch"] == 2 and job["errors"] == 0 and {i["id"] for i in job["unmatched"]} == {1, 2}

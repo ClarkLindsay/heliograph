@@ -19,7 +19,7 @@ engine_mod.IMPORT_ROUND_WAIT = 0
 
 # ------------------------------------------------------------------ provider read_state()
 def test_goodreads_read_state():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c = cfg(tmp); c["goodreads"].update(enabled=True, cookie="a=1"); p = gr.Goodreads(c, PLOG)
         apollo = {"ROOT_QUERY": {'getBookByLegacyId({"legacyId":"77"})': {"__ref": "Book:1"}},
                   "Book:1": {"viewerShelving": {"__ref": "S:1"}, "details": {"numPages": 300}},
@@ -47,7 +47,7 @@ def test_goodreads_read_state():
 
 
 def test_storygraph_read_state():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c = cfg(tmp); c["storygraph"].update(enabled=True, session_cookie="S", remember_user_token="R"); p = sg.StoryGraph(c, PLOG)
         form = ('<form action="/reviews/9"><input name="stars_integer" value="4"><input name="stars_decimal" value="25"></form>')
         def fake(method, url, **kw):
@@ -63,7 +63,7 @@ def test_storygraph_read_state():
 
 
 def test_fable_and_pagebound_and_librarything_read_state():
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c = cfg(tmp); c["fable"].update(enabled=True, id_token="J", refresh_token="R", token_expires_at=time.time() + 3000, user_id="U1")
         p = fb.Fable(c, PLOG)
         def ffake(method, url, **kw):
@@ -83,7 +83,7 @@ def test_fable_and_pagebound_and_librarything_read_state():
         with mock.patch("requests.request", return_value=Resp(200, {"book": {"id": 5, "uuid": "UU", "user_book": None}})):
             assert p.read_state("5:UU")["status"] is None
 
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c, p = lt_provider(tmp); p._remember("700", title="The Hobbit", author="Tolkien")
         def lfake(method, url, **kw):
             path = url.replace(lt.BASE, "")
@@ -121,7 +121,7 @@ class Svc(Provider):
 
 
 def run_import(books, remotes, skip=True, dry=False):
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         c = Config(os.path.join(tmp, "c.json"))
         for k in remotes: c[k]["enabled"] = True
         hc = FakeHC()
