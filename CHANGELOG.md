@@ -4,6 +4,8 @@ What changed in each release of Heliograph. Each release's notes on GitHub are t
 
 ## Unreleased
 
+## 0.6.2 (2026-11-23)
+
 ### Fixed
 - The log no longer says "Some updates failed; keeping the Hardcover window open" after every sync when review
   syncing is off. Nothing had failed and nothing was held back; the warning was wrong (since 0.6.0).
