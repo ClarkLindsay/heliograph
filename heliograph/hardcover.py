@@ -13,7 +13,7 @@ FORMAT_NAMES = {1: "Print", 2: "Audiobook", 3: "Print", 4: "Ebook"}
 
 UB_FIELDS = """
   id book_id edition_id status_id rating updated_at review_raw review_has_spoilers
-  book { id title pages contributions { contribution author { name } } }
+  book { id slug title pages contributions { contribution author { name } } }
   edition { reading_format_id audio_seconds }
   user_book_reads(order_by: {id: desc}, limit: 1) { id progress_pages progress_seconds started_at finished_at }
   last_finished: user_book_reads(where: {finished_at: {_is_null: false}}, order_by: {finished_at: desc}, limit: 1) { started_at finished_at }
@@ -51,6 +51,7 @@ class Book:
     audio: bool = False                 # your Hardcover edition is an audiobook ("Listened")
     seconds: Optional[int] = None       # audiobook progress: time listened
     total_seconds: Optional[int] = None # audiobook length
+    slug: Optional[str] = None          # the Hardcover book's slug (not stored)
     review: Optional[str] = None        # your Hardcover review, as plain text
     review_spoilers: bool = False
     hydrated: bool = False
@@ -92,7 +93,7 @@ def book_from_ub(ub: dict) -> Book:
         finished_on=done.get("finished_at") or None, started_on=done.get("started_at") or None,
         audio=(ub.get("edition") or {}).get("reading_format_id") == AUDIO_FORMAT,
         seconds=read.get("progress_seconds"), total_seconds=(ub.get("edition") or {}).get("audio_seconds") or None,
-        review=(ub.get("review_raw") or "").strip() or None, review_spoilers=bool(ub.get("review_has_spoilers")),
+        slug=book.get("slug"), review=(ub.get("review_raw") or "").strip() or None, review_spoilers=bool(ub.get("review_has_spoilers")),
     )
 
 

@@ -53,6 +53,7 @@ class Engine:
         self.ed_job = {"running": False}
         self.dates_job = {"running": False}
         self.bo_job = {"running": False}
+        self._cycle_books = []
         self._bo_found = {}                              # BookOrbit book key -> the last Hardcover search you ran for it
         try:                                             # the last scan's list survives a restart
             saved = json.loads(self.state.get("bookorbit_job") or "null")
@@ -117,6 +118,10 @@ class Engine:
             n = self._cycle()
             self.status["result"] = "ok" if not self._problems else f"{self._problems} update(s) failed, will retry"
             try:
+                self.bookorbit_from_hardcover(self._cycle_books)
+            except Exception as e:
+                self.log.warning("BookOrbit: couldn't copy ratings and reviews: %s", e)
+            try:
                 self.check_removed()
             except Exception as e:
                 self.log.error("Checking for books removed from Hardcover failed: %s", e)
@@ -150,6 +155,7 @@ class Engine:
                     seen.setdefault(b.ub_id, b)
             books = list(seen.values())
         base = self.common["initial_sync"] == "baseline"
+        self._cycle_books = books
         self.log.info("Hardcover: %d book(s) to examine%s", len(books),
                       (f" (first run for {', '.join(sorted(firsts))}: "
                        + ("recording only, nothing pushed)" if base else "importing)")) if firsts else "")
@@ -960,6 +966,112 @@ class Engine:
                 return "https://hardcover.app/search?q=" + quote(b.title)
             cache[key] = f"https://hardcover.app/books/{slug}" + (f"/editions/{b.edition_id}" if b.edition_id else "")
         return cache[key]
+
+    def _bo_sent(self):
+        try:
+            return json.loads(self.state.get("bookorbit_sent") or "{}")
+        except (TypeError, ValueError):
+            return {}
+
+    def bookorbit_from_hardcover(self, books=None):
+        """Hardcover leads: your star rating and review there are copied to the BookOrbit book linked to it.
+        - Ratings: BookOrbit takes whole stars only, so a half/quarter star clears BookOrbit's rating rather than
+          rounding it (BookOrbit's own Hardcover sync would send the rounded value back over yours). A rating is
+          also skipped while BookOrbit's reading status disagrees with Hardcover's: a rating change makes BookOrbit
+          re-sync the book, status included.
+        - Reviews: into the Personal Review. A different note you wrote in BookOrbit isn't replaced unless
+          "overwrite reviews" is on; deleting a review on Hardcover doesn't delete the note.
+        books: the books this cycle looked at; the first run (or books=None) goes through your whole library."""
+        c = self.config["bookorbit"]
+        if self.dry or not (c.get("url") and c.get("api_key") and c.get("from_hardcover")):
+            return 0
+        sent = self._bo_sent()
+        if books is None or self.state.get("bookorbit_from_hc_done") != "1":
+            books = self.hc().fetch_library()
+            first = True
+        else:
+            first = False
+        books = [b for b in books if b.rating or b.review or str(b.ub_id) in sent]
+        if not books and not first:
+            return 0
+        client = self.bookorbit()
+        try:                                                 # does a rating change make BookOrbit sync the book?
+            hs = client.hardcover_settings()
+            guarded = bool(hs.get("effectiveEnabled", hs.get("enabled", True)) and hs.get("autoSyncOnRatingChange", True))
+        except Exception:
+            guarded = True
+        held = 0
+        by_hc = {}
+        for bo in client.books():
+            if bo.get("hardcoverId"):
+                by_hc.setdefault(str(bo["hardcoverId"]), []).append(bo)
+        n = 0
+        for b in books:
+            matches = by_hc.get(b.slug or "") or by_hc.get(str(b.book_id or "")) or []
+            mine = sent.setdefault(str(b.ub_id), {})
+            for bo in matches:
+                try:
+                    n += self._bo_copy(client, b, bo, mine, guarded)
+                    held += bool(mine.get("rating_skip"))
+                except Exception as e:
+                    self.log.warning("BookOrbit: couldn't update '%s': %s", bo.get("title") or b.title, e)
+            if not mine:
+                sent.pop(str(b.ub_id), None)
+        self.state.set("bookorbit_sent", json.dumps(sent))
+        if held and self.state.get("bookorbit_held_hint") != str(held):
+            self.state.set("bookorbit_held_hint", str(held))
+            self.log.info("BookOrbit: %d rating(s) held back because BookOrbit's status, dates or edition differ from "
+                          "Hardcover's. Turning off \"sync on rating change\" in BookOrbit's Hardcover settings lets "
+                          "Heliograph copy them all safely", held)
+        if first:
+            self.state.set("bookorbit_from_hc_done", "1")
+            self.log.info("BookOrbit: ratings and reviews copied from Hardcover (%d change(s))", n)
+        return n
+
+    def _bo_copy(self, client, b, bo, mine, guarded=True):
+        n, title, locked = 0, bo.get("title") or b.title, set(bo.get("lockedFields") or [])
+        # rating
+        whole = b.rating is not None and float(b.rating) == int(b.rating) and 1 <= b.rating <= 5
+        want = int(b.rating) if whole else None
+        if b.rating and not whole and mine.get("rating_note") != b.rating:
+            self.log.info("BookOrbit: '%s' is rated %s on Hardcover; BookOrbit only takes whole stars, so its rating "
+                          "is left blank", title, b.rating)
+            mine["rating_note"] = b.rating
+        have = bo.get("rating")
+        clear_ok = b.rating or mine.get("rating") is not None        # only clear a rating Heliograph put there,
+        if want != have and (want is not None or (clear_ok and have is not None)) and "rating" not in locked:   # or one Hardcover no longer has whole
+            why = bookorbit.out_of_step(bo, b) if guarded else None
+            if why:
+                if mine.get("rating_skip") != why:          # said once, not every cycle
+                    self.log.info("BookOrbit: '%s' rating not copied: %s. A rating change makes BookOrbit sync the book to "
+                                  "Hardcover (status, dates and edition included)", title, why)
+                    mine["rating_skip"] = why
+            else:
+                mine.pop("rating_skip", None)
+                client.update(bo["id"], {"rating": want})
+                bo["rating"] = want
+                self.log.info("BookOrbit: '%s' rating %s", title, want if want is not None else "cleared")
+                n += 1
+        else:
+            mine.pop("rating_skip", None)                    # nothing to copy (any more)
+        mine["rating"] = want if bo.get("rating") == want else mine.get("rating")
+        # review
+        sig = self.review_sig(b)
+        if sig and mine.get("review") not in (sig, "kept:" + sig):
+            note = (client.book(bo["id"]) or {}).get("personalNote") or ""
+            if note and review_norm(note) == review_norm(b.review):
+                mine["review"] = sig
+            elif note and not (mine.get("review") and not str(mine["review"]).startswith("kept:")) \
+                    and not self.common.get("overwrite_reviews"):
+                self.log.info("BookOrbit: '%s' has a different Personal Review that Heliograph didn't write: left alone "
+                              "(Settings → overwrite reviews to replace it)", title)
+                mine["review"] = "kept:" + sig
+            else:
+                client.set_note(bo["id"], b.review)
+                mine["review"] = sig
+                self.log.info("BookOrbit: '%s' review copied from Hardcover (%d characters)", title, len(b.review))
+                n += 1
+        return n
 
     def bookorbit_ebooks(self, force=False):
         """An audiobook you've since added an ebook to: switch its Hardcover edition to the ebook (if you allow it)."""

@@ -61,6 +61,44 @@ class BookOrbitClient:
     def update(self, book_id, fields):
         return self._req("PATCH", f"/api/v1/books/{int(book_id)}/metadata", json=fields)
 
+    def hardcover_settings(self):
+        return self._req("GET", "/api/v1/hardcover/settings") or {}
+
+    def book(self, book_id):
+        return self._req("GET", f"/api/v1/books/{int(book_id)}")
+
+    def set_note(self, book_id, text):
+        """The book's "Personal Review" (BookOrbit calls it the personal note)."""
+        return self._req("PATCH", f"/api/v1/books/{int(book_id)}/personal-note", json={"note": text})
+
+
+BO_STATUS = {"read": "read", "reading": "reading", "want": "want_to_read"}
+
+
+def bo_status(book):
+    return ((book.get("readStatus") or {}).get("status")) or None
+
+
+def out_of_step(bo, hc_book):
+    """Why BookOrbit's own Hardcover sync would change something if it ran for this book now, or None.
+    It sends BookOrbit's status, its edition, and its start/finish dates when it has them (a blank date isn't
+    sent); a book BookOrbit hasn't marked at all isn't synced."""
+    rs = bo.get("readStatus") or {}
+    st = rs.get("status")
+    if not st:
+        return None
+    day = lambda x: (x or "")[:10] or None
+    if st != BO_STATUS.get(hc_book.status):
+        return f"BookOrbit says {st.replace('_', ' ')}, Hardcover says {hc_book.status}"
+    if day(rs.get("finishedAt")) and day(rs.get("finishedAt")) != day(hc_book.finished_on):
+        return f"BookOrbit's finish date is {day(rs.get('finishedAt'))}, Hardcover's {day(hc_book.finished_on) or 'none'}"
+    if day(rs.get("startedAt")) and day(rs.get("startedAt")) != day(hc_book.started_on):
+        return f"BookOrbit's start date is {day(rs.get('startedAt'))}, Hardcover's {day(hc_book.started_on) or 'none'}"
+    ed = bo.get("hardcoverEditionId")
+    if ed and hc_book.edition_id and str(ed) != str(hc_book.edition_id):
+        return f"BookOrbit's Hardcover edition is {ed}, your Hardcover library has {hc_book.edition_id}"
+    return None
+
 
 # ---------------------------------------------------------------- what a book is
 def kind(book):

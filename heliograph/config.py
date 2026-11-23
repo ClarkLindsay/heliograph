@@ -41,6 +41,7 @@ DEFAULTS = {
         "web_url": "",               # where you open BookOrbit in your browser, for links (blank: worked out from url)
         "api_key": "",               # BookOrbit -> Settings -> API keys
         "auto_ebook": True,          # adding an ebook to an audiobook switches its Hardcover edition to the ebook
+        "from_hardcover": True,      # copy your Hardcover star ratings and reviews into BookOrbit
     },
     "web": {
         "enabled": True,

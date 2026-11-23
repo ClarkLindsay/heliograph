@@ -65,7 +65,8 @@ SPEC = {
         ("url", "BookOrbit URL (from Docker: http://host.docker.internal:3000)", "str"),
         ("web_url", "BookOrbit address in your browser, for “BookOrbit ↗” links (e.g. https://bookorbit.example.com)", "str"),
         ("api_key", "API key (BookOrbit → Settings → API keys)", "secret"),
-        ("auto_ebook", "When you add an ebook to an audiobook, switch its Hardcover edition to the ebook", "bool")]),
+        ("auto_ebook", "When you add an ebook to an audiobook, switch its Hardcover edition to the ebook", "bool"),
+        ("from_hardcover", "Copy your Hardcover star ratings and reviews into BookOrbit (Hardcover is the source)", "bool")]),
     "common": ("Sync behaviour", [
         ("poll_interval_minutes", "Poll Hardcover every (minutes)", "int"),
         ("min_update_interval_seconds", "Min seconds between progress updates", "int"),

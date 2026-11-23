@@ -286,7 +286,81 @@ def test_set_aside_a_book_hardcover_doesnt_have():
             bo.HardcoverLookup = orig
 
 
-ALL = [test_set_aside_a_book_hardcover_doesnt_have, test_kind_and_edition_rules, test_plan_book, test_engine_scan_apply_and_ebook_switch,
+def test_ratings_and_reviews_from_hardcover():
+    from heliograph.config import Config
+    from heliograph.engine import Engine
+    from heliograph.hardcover import Book
+    from heliograph.state import State
+
+    class Client:
+        def __init__(self):
+            self.lib = [book(1, "Dune", ["Frank Herbert"], ["epub"], hardcoverId="dune", rating=None,
+                             readStatus={"status": "read"}),
+                        book(2, "The Hobbit", ["J.R.R. Tolkien"], ["epub"], hardcoverId="the-hobbit", rating=3,
+                             readStatus={"status": "reading"}),
+                        book(3, "Emma", ["Jane Austen"], ["epub"], hardcoverId="42", rating=None, readStatus=None),
+                        book(4, "Locked", ["X"], ["epub"], hardcoverId="locked", rating=2, lockedFields=["rating"])]
+            self.notes, self.calls = {3: "my own private thoughts"}, []
+        def books(self): return [dict(b) for b in self.lib]
+        def book(self, i): return {"id": i, "personalNote": self.notes.get(i)}
+        def update(self, i, f):
+            self.calls.append(("rating", i, f["rating"])); next(b for b in self.lib if b["id"] == i).update(f)
+        def set_note(self, i, t): self.calls.append(("note", i, t)); self.notes[i] = t
+
+    class HC:
+        def __init__(self, books): self.lib = books
+        def fetch_library(self): return list(self.lib)
+
+    dune = Book(10, "Dune", status="read", rating=4.0, slug="dune", review="Spice.")
+    hobbit = Book(11, "The Hobbit", status="read", rating=5.0, slug="the-hobbit")
+    emma = Book(12, "Emma", status="read", rating=3.5, book_id=42, review="Witty.")
+    locked = Book(13, "Locked", status="read", rating=4.0, slug="locked")
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        cfg = Config(os.path.join(tmp, "c.json"))
+        cfg["bookorbit"].update(url="http://bo", api_key="k")
+        eng = Engine(cfg, [], State(os.path.join(tmp, "s.db")), logging.getLogger("t"), hardcover=HC([dune, hobbit, emma, locked]))
+        client = Client()
+        eng.bookorbit = lambda: client
+        eng.bookorbit_from_hardcover([])                      # the first run goes through the whole library
+        assert client.calls == [("rating", 1, 4), ("note", 1, "Spice.")], client.calls
+        # the Hobbit: BookOrbit says reading, Hardcover read -> not touched (BookOrbit would sync its status back)
+        # Emma: 3.5 stars -> BookOrbit's (blank) rating stays blank; its own note isn't replaced
+        # Locked: you locked the rating in BookOrbit
+        assert client.notes[3] == "my own private thoughts"
+        client.calls.clear()
+        eng.bookorbit_from_hardcover([dune, hobbit, emma, locked])
+        assert client.calls == []                             # nothing changed: nothing written
+        client.lib[1]["readStatus"] = {"status": "read"}      # you fix the Hobbit's status in BookOrbit
+        dune.rating, dune.review = 5.0, "Spice! Edited."
+        eng.bookorbit_from_hardcover([dune, hobbit])
+        assert client.calls == [("rating", 1, 5), ("note", 1, "Spice! Edited."), ("rating", 2, 5)], client.calls
+        client.calls.clear()
+        client.lib[0]["readStatus"] = {"status": "read", "finishedAt": "2024-04-18T00:00:00.000Z"}
+        dune.rating, dune.finished_on = 3.0, "2024-04-17"     # BookOrbit's finish date differs: not touched
+        eng.bookorbit_from_hardcover([dune])
+        assert client.calls == []
+        dune.finished_on = "2024-04-18"                       # dates agree: copied
+        eng.bookorbit_from_hardcover([dune])
+        assert client.calls == [("rating", 1, 3)]
+        client.calls.clear()
+        dune.rating = 4.5                                     # a half star: cleared, never rounded
+        eng.bookorbit_from_hardcover([dune])
+        assert client.calls == [("rating", 1, None)]
+        client.calls.clear()
+        client.calls.clear()
+        dune.rating, dune.finished_on = 2.0, "2020-01-01"     # dates differ again: held back...
+        eng.bookorbit_from_hardcover([dune])
+        assert client.calls == []
+        client.hardcover_settings = lambda: {"enabled": True, "autoSyncOnRatingChange": False}
+        eng.bookorbit_from_hardcover([dune])                  # ...until BookOrbit no longer syncs on a rating change
+        assert client.calls == [("rating", 1, 2)], client.calls
+        client.calls.clear()
+        cfg["bookorbit"]["from_hardcover"] = False
+        dune.rating = 1.0
+        assert eng.bookorbit_from_hardcover([dune]) == 0 and client.calls == []
+
+
+ALL = [test_ratings_and_reviews_from_hardcover, test_set_aside_a_book_hardcover_doesnt_have, test_kind_and_edition_rules, test_plan_book, test_engine_scan_apply_and_ebook_switch,
        test_scan_pauses_at_hardcovers_daily_limit, test_parse_ref, test_find_on_hardcover_and_paste,
        test_apply_uses_a_ticked_suggestion_and_hardcover_url]
 
