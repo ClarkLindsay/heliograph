@@ -188,7 +188,7 @@ function hardcoverTab(){const m=$('#main'),tok=tabToken,u={};
 
 /* BookOrbit: the right Hardcover book and edition for every book, so BookOrbit's own Hardcover sync is ready. */
 function bookorbitTab(){const m=$('#main'),tok=tabToken;
- const FIX={relink:'Wrong Hardcover book',link:'Not linked yet',edition:'Edition',language:'Language',ok:'Needs a look',error:'Error',aside:'Set aside'};
+ const FIX={relink:'Wrong Hardcover book',link:'Not linked yet',edition:'Edition',language:'Language',ok:'Needs a look',error:'Error',aside:'Set aside',done:'Done'};
  // items keep their identity across polls (merged by key) and each row is rebuilt only when its own data changes,
  // so ticking a box or using a suggestion touches one row, not the whole list
  const d={msg:h('div',{class:'small'}),bar:h('i',{style:'width:0%'}),list:h('div',{style:'margin-top:6px'}),out:h('div'),sel:new Set(),seen:0,picked:0,
@@ -201,7 +201,8 @@ function bookorbitTab(){const m=$('#main'),tok=tabToken;
    const keys=d.items.filter(i=>d.sel.has(i.key)&&canApply(i)).map(i=>i.key);
    if(!keys.length||!confirm(`Update ${keys.length} book(s) in BookOrbit?`))return;
    try{await api('/api/bookorbit/apply',{keys});setTimeout(()=>tok===tabToken&&poll(),300)}catch(e){note(d.out,e.message,'bad')}}},'Apply');
- const vis=()=>d.filter?d.items.filter(i=>i.fix===d.filter):d.items;
+ const group=i=>isDone(i)?'done':i.fix;                    // linked or applied: out of its group, into Done
+ const vis=()=>d.filter?d.items.filter(i=>group(i)===d.filter):d.items;
  function syncSel(){                                          // checkboxes + the Apply count, nothing else
   for(const [k,r] of d.rows)if(r.cb)r.cb.checked=d.sel.has(k);
   const n=d.items.filter(i=>d.sel.has(i.key)&&canApply(i)).length,show=d.items.length&&!d.running;
@@ -210,7 +211,7 @@ function bookorbitTab(){const m=$('#main'),tok=tabToken;
  const link=(t,f)=>h('a',{href:'#',onclick:e=>{e.preventDefault();pick(f)}},t);
  d.bulk=h('span',{class:'small',style:'display:none'},'Select ',link('all',()=>true),' · ',link('suggestions',i=>!!i.suggestion&&!Object.keys(i.changes||{}).includes('hardcoverId')),' · ',link('none',()=>false));
  d.filters=h('div',{class:'row small',style:'margin-top:6px'});
- const ch=c=>{const v=d.items.filter(i=>i.fix===c);return v.length?h('a',{href:'#',class:'chip'+(d.filter===c?' recorded':''),onclick:e=>{e.preventDefault();d.filter=d.filter===c?'':c;render()}},`${FIX[c]||c} (${v.length})`):null};
+ const ch=c=>{const v=d.items.filter(i=>group(i)===c);return v.length?h('a',{href:'#',class:'chip'+(d.filter===c?' recorded':''),onclick:e=>{e.preventDefault();d.filter=d.filter===c?'':c;render()}},`${FIX[c]||c} (${v.length})`):null};
  const ext=(href,t)=>h('a',{class:'small',href,target:'_blank',rel:'noopener noreferrer'},t);
  const hcUrl=(b,ed)=>`https://hardcover.app/books/${b.slug||b.id}`+(ed&&ed.id?`/editions/${ed.id}`:'');
  const changed=()=>render();                                  // render() sees the row's data changed and swaps just that row
@@ -267,8 +268,8 @@ function bookorbitTab(){const m=$('#main'),tok=tabToken;
   return {el,cb}}
  const rowSig=i=>sigOf([i.fix,i.result,i.changes,i.suggestion&&i.suggestion.id,i.problem,i.book&&i.book.id,i.edition&&i.edition.id,d.running,!!d.base]);
  function render(){
-  const fs=sigOf([d.items.map(i=>i.fix),d.filter]);
-  if(fs!==d.fsig){d.fsig=fs;fill(d.filters,['relink','link','edition','language','ok','error','aside'].map(ch))}
+  const fs=sigOf([d.items.map(group),d.filter]);
+  if(fs!==d.fsig){d.fsig=fs;fill(d.filters,['relink','link','edition','language','ok','error','aside','done'].map(ch))}
   const v=vis(),shown=v.slice(0,400);
   for(const i of shown){const r=d.rows.get(i.key),sg=rowSig(i);if(!r||r.sig!==sg){const n=line(i);n.sig=sg;n.item=i;d.rows.set(i.key,n);if(r)r.el.replaceWith(n.el)}}
   const ls=sigOf(shown.map(i=>i.key));
