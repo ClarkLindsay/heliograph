@@ -26,13 +26,13 @@ other services. All credit for working out how to talk to each service goes to t
 - [Changing the web UI port](#changing-the-web-ui-port)
 - [Getting credentials for each service](#getting-credentials-for-each-service)
 - [Web UI](#web-ui)
+- [Optional tools and integrations](#optional-tools-and-integrations)
 - [Accounts and sign-in](#accounts-and-sign-in)
 - [Protecting secrets](#protecting-secrets)
 - [Command line](#command-line)
 - [Config and storage](#config-and-storage)
 - [Goodreads cookie refresher](#goodreads-cookie-refresher)
 - [LibraryThing](#librarything)
-- [BookOrbit](#bookorbit)
 - [Behaviour notes](#behaviour-notes)
 - [Updating](#updating)
 - [Troubleshooting](#troubleshooting)
@@ -55,13 +55,9 @@ other services. All credit for working out how to talk to each service goes to t
 Ratings: Goodreads quarter stars, StoryGraph quarter stars (review form, other review fields untouched), Fable as-is,
 Pagebound and LibraryThing half stars (floored), the same as ShelfSync.
 
-Sync is **one way only**. Heliograph reads Hardcover through its official API and never writes to it while syncing.
-The exceptions are the optional data corrections on the **Hardcover** tab, which only write when you press **Apply**:
-**Reading dates from Goodreads** fills in start dates (and other date fixes you pick), and **Hardcover editions**
-changes a book's edition, for example from a translation you never read to the English edition.
-
-If you use [BookOrbit](#bookorbit), Heliograph also writes to BookOrbit: the Hardcover links and editions you apply on
-the **BookOrbit** tab, and (optionally) your Hardcover star ratings and reviews.
+Sync is **one way only**: Heliograph reads Hardcover through its official API and never writes to it while syncing.
+The [optional tools](#optional-tools-and-integrations) can write to Hardcover or BookOrbit, but only when you press
+**Apply** (or turn an option on).
 
 By default the first run is a **baseline**: it records your current library and pushes nothing, so only *later* changes
 are sent. That's the safe choice if you've already imported your history into each service. Use the **Import** tab
@@ -282,22 +278,8 @@ Open **http://localhost:8080** (or [your port](#changing-the-web-ui-port)).
   - **Unmatched books:** books with no confident match on a service (even in a preview) are listed here and flagged ⚑
     in the Books tab (filter: *Flagged: no match*). Click one, then **Find edition…** and **Use this**. It drops off
     the list once linked.
-- **Hardcover** tab (0.5.0+): corrections to your Hardcover data. These are the only things in Heliograph that write
-  to Hardcover, and only when you press **Apply**.
-  - **Reading dates from Goodreads:** for people who came to Hardcover with a Goodreads import, which brings finish
-    dates but no start dates. **Scan Goodreads** reads your Goodreads *My Books* list (one page per 100 books) and
-    your Hardcover reads, matches the books (the linked edition, then ISBN, then title and author) and pairs up each
-    reading session by its finish date. It then lists what differs:
-    - **Start date:** Goodreads has a start date that Hardcover is missing (pre-selected) or has differently (not
-      selected). Same-day start and finish dates are not selected either: they're often placeholders.
-    - **Change dates:** one read on each side with different finish dates (not selected).
-    - **Add a read:** a Goodreads read Hardcover doesn't have. Pre-selected only when Hardcover has no reads of the book.
-
-    Tick what you want and press **Apply**. Each read is checked again just before it's written, and skipped if
-    Hardcover's dates changed since the scan. Dates Goodreads only has as a month or year are left out.
-  - **Hardcover editions:** finds books whose Hardcover edition isn't in your preferred language and switches the ones
-    you pick (moved here from the Import tab).
-- **BookOrbit** tab (0.6.0+): gets your BookOrbit library's Hardcover links right. See [BookOrbit](#bookorbit).
+- **Tools** (0.6.1+): occasional jobs, kept out of the way of everyday syncing. See
+  [Optional tools and integrations](#optional-tools-and-integrations).
 - **Settings:** everything from the config, including the poll interval. Secrets are never shown: leave a field blank
   to keep its value, and **Clear** removes it. Settings set through `HELIOGRAPH__...` environment variables are shown
   locked. Changes apply on the next cycle.
@@ -495,14 +477,42 @@ LibraryThing has no reading status or progress: a "status" is which collection a
 - Sign in with `username` + `password` (renewed automatically), or paste the three session cookies.
 - If Cloudflare challenges the requests, you'll see an error. Retry later, or set `user_agent`.
 
-## BookOrbit
+## Optional tools and integrations
+
+Everyday syncing needs none of this. These are jobs you run once after setting up, or only if you use a particular
+app. They're on the web UI's **Tools** tab (0.6.1+; before that they were separate tabs) and change nothing until
+you press **Apply**.
+
+### Hardcover cleanup (0.5.0+)
+For people who came to Hardcover through a Goodreads import, which leaves out start dates and sometimes picks odd
+editions. These are the only things in Heliograph that write to Hardcover, and only when you press **Apply**.
+
+- **Reading dates from Goodreads:** fills in the start dates a Goodreads import leaves out. **Scan Goodreads** reads your Goodreads *My Books* list (one page per 100 books) and
+  your Hardcover reads, matches the books (the linked edition, then ISBN, then title and author) and pairs up each
+  reading session by its finish date. It then lists what differs:
+  - **Start date:** Goodreads has a start date that Hardcover is missing (pre-selected) or has differently (not
+    selected). Same-day start and finish dates are not selected either: they're often placeholders.
+  - **Change dates:** one read on each side with different finish dates (not selected).
+  - **Add a read:** a Goodreads read Hardcover doesn't have. Pre-selected only when Hardcover has no reads of the book.
+
+  Tick what you want and press **Apply**. Each read is checked again just before it's written, and skipped if
+  Hardcover's dates changed since the scan. Dates Goodreads only has as a month or year are left out.
+- **Hardcover editions:** finds books whose Hardcover edition isn't in your preferred language and switches the ones
+  you pick.
+
+### Linked editions
+**Tools → Linked editions** checks every linked book on your services and lists the ones on the wrong edition (an
+audiobook or another language). **Fix them** relinks those books: on StoryGraph your entry is moved, and elsewhere the current
+status is sent to the new edition. The old entry stays on Goodreads or Fable for you to remove.
+
+### BookOrbit
 
 [BookOrbit](https://github.com/bookorbit/bookorbit) is a self-hosted ebook and audiobook library with its own
 Hardcover sync: when you read a book in BookOrbit, it sends your status, progress and dates to Hardcover, and from
 there Heliograph sends them on to your other services. For that to land on the right book, each BookOrbit book needs
-the right Hardcover book and edition. The **BookOrbit** tab (0.6.0+) does that.
+the right Hardcover book and edition. **Tools → BookOrbit** (0.6.0+) does that.
 
-**Setup:** in **Settings → BookOrbit**, set:
+**Setup:** in **Settings → BookOrbit** (folded away until you open it), set:
 - **BookOrbit URL:** how Heliograph reaches it. From Docker that's usually `http://host.docker.internal:3000`.
 - **API key:** BookOrbit → Settings → API keys. It's stored encrypted, like every other secret.
 - **BookOrbit address in your browser:** where you open BookOrbit (for example `https://bookorbit.example.com`), so
@@ -584,9 +594,6 @@ that off in BookOrbit.
     is acceptable. If your entry is on an audiobook or another-language edition, it links the right
     edition of the same work and moves your entry there with StoryGraph's own "switch to this edition", keeping your
     dates, rating and review. That never happens in a preview.
-  - **Fixing existing links:** the Import tab's **Linked editions** card checks every linked book and lists the ones on
-    the wrong edition. **Fix them** relinks those books: on StoryGraph your entry is moved, and elsewhere the current
-    status is sent to the new edition. The old entry stays on Goodreads or Fable for you to remove.
   - Pagebound has no ISBN lookup, and Pagebound and LibraryThing don't say which edition is which.
 - **Retries:** if any push fails, the Hardcover change window is held open so it's retried next cycle (for up to 7 days).
 - **Removing books:** taking a book out of your Hardcover library does nothing on your services unless you set

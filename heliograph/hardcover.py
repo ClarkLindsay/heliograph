@@ -1,5 +1,5 @@
 """Hardcover GraphQL client (official API). Hardcover is the source of truth: syncing only reads it. The only writes
-are set_edition() and set_read_dates(), used by the web UI's Hardcover tab when you press Apply.
+are set_edition() and set_read_dates(), used by the web UI's Tools → Hardcover cleanup when you press Apply.
 Field names follow the ones ShelfSync's own Hardcover provider queries."""
 import time
 from dataclasses import dataclass, field
