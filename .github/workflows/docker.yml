@@ -54,6 +54,15 @@ jobs:
             exit 1
           fi
 
+      - name: Check CHANGELOG.md has this release
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          sh .github/changelog.sh "$tag" > /dev/null || {
+            echo "::error::CHANGELOG.md has no '## $tag' section (rename 'Unreleased' to '$tag (date)')"
+            exit 1
+          }
+
   image:
     needs: test
     runs-on: ubuntu-latest
@@ -120,7 +129,9 @@ jobs:
         run: |
           version="${TAG#v}"
           image=$(echo "$IMAGE" | tr '[:upper:]' '[:lower:]')
-          cat > notes.md <<EOF
+          sh .github/changelog.sh "$version" > notes.md
+          cat >> notes.md <<EOF
+
           ## Docker image
           \`\`\`sh
           docker pull $image:$version
