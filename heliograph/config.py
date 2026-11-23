@@ -38,6 +38,7 @@ DEFAULTS = {
     },
     "bookorbit": {
         "url": "",                   # e.g. http://host.docker.internal:3000
+        "web_url": "",               # where you open BookOrbit in your browser, for links (blank: worked out from url)
         "api_key": "",               # BookOrbit -> Settings -> API keys
         "auto_ebook": True,          # adding an ebook to an audiobook switches its Hardcover edition to the ebook
     },

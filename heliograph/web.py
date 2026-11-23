@@ -63,6 +63,7 @@ SPEC = {
         ("home_url", "Dashboard icon link", "str")]),
     "bookorbit": ("BookOrbit", [
         ("url", "BookOrbit URL (from Docker: http://host.docker.internal:3000)", "str"),
+        ("web_url", "BookOrbit address in your browser, for “BookOrbit ↗” links (e.g. https://bookorbit.example.com)", "str"),
         ("api_key", "API key (BookOrbit → Settings → API keys)", "secret"),
         ("auto_ebook", "When you add an ebook to an audiobook, switch its Hardcover edition to the ebook", "bool")]),
     "common": ("Sync behaviour", [
@@ -616,7 +617,8 @@ def make_handler(hub, cfg, server_log):
                 if path == "/api/removals": return api.e.pending_removals()
                 if path == "/api/hardcover/dates": return dict(api.e.dates_job)
                 if path == "/api/matching": return api.e.matching_status()
-                if path == "/api/bookorbit": return dict(api.e.bo_job, bo_url=api.cfg["bookorbit"].get("url") or "")
+                if path == "/api/bookorbit": return dict(api.e.bo_job, bo_url=api.cfg["bookorbit"].get("url") or "",
+                                                              bo_web=api.cfg["bookorbit"].get("web_url") or "")
                 m = re.fullmatch(r"/api/book/(\d+)", path)
                 if m: return api.book(int(m.group(1)))
                 m = re.fullmatch(r"/api/book/(\d+)/cover", path)

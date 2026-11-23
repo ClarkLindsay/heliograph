@@ -227,7 +227,7 @@ function bookorbitTab(){const m=$('#main'),tok=tabToken;
       try{took(await api('/api/bookorbit/suggestion',{key:i.key}))}catch(x){unbusy(btn);note(res,x.message,'bad')}}},'Use this')):null;
   const cur=i.current&&i.current.hardcoverId;
   const links=h('span',{class:'small'},' ',
-    d.base?ext(`${d.base}/book/${i.id}`,'BookOrbit ↗'):null,
+    d.base?ext(`${d.base}/book/${i.id}?tab=details`,'BookOrbit ↗'):null,
     cur&&(!i.book||String(cur)!==String(i.book.slug||i.book.id))?[' · ',ext(`https://hardcover.app/books/${cur}`+(i.current.hardcoverEditionId?`/editions/${i.current.hardcoverEditionId}`:''),'linked now ↗')]:null,
     i.book?[' · ',ext(hcUrl(i.book,i.edition),done?'Hardcover ↗':'Hardcover (proposed) ↗')]:null);
   const panel=h('div');
@@ -272,6 +272,7 @@ function bookorbitTab(){const m=$('#main'),tok=tabToken;
   syncSel()}
  async function poll(){const j=await api('/api/bookorbit');if(tok!==tabToken)return 8000;
   if(j.started&&j.started!==d.seen){d.seen=j.started;d.sel.clear();d.picked=0;d.byKey.clear();d.rows.clear();d.lsig=''}
+  if(j.bo_web&&!d.base){try{d.base=new URL(/^https?:\/\//i.test(j.bo_web)?j.bo_web:'https://'+j.bo_web).href.replace(/\/+$/,'')}catch(e){}}
   if(j.bo_url&&!d.base){try{const u=new URL(j.bo_url);if(u.hostname==='host.docker.internal')u.hostname=location.hostname;d.base=(u.origin+u.pathname).replace(/\/+$/,'')}catch(e){}}
   const items=(j.items||[]).map(it=>{const o=d.byKey.get(it.key);if(o){Object.assign(o,it);return o}d.byKey.set(it.key,it);return it});
   d.items=items;
