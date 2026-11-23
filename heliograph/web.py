@@ -630,6 +630,10 @@ def make_handler(hub, cfg, server_log):
                         raise ApiError(400, "Send keys: a list of book keys")
                     return dict(api._guard(api.e.apply_bookorbit, keys))
                 if path == "/api/bookorbit/suggestion": return api._guard(api.e.bookorbit_use_suggestion, str(body.get("key") or ""))
+                if path == "/api/bookorbit/search":
+                    return api._guard(api.e.bookorbit_search, str(body.get("key") or ""), str(body.get("query") or ""))
+                if path == "/api/bookorbit/link":
+                    return api._guard(api.e.bookorbit_link, str(body.get("key") or ""), str(body.get("ref") or ""))
                 if path == "/api/hardcover/dates/apply":
                     keys = body.get("keys")
                     if not isinstance(keys, list) or not all(isinstance(k, str) for k in keys):

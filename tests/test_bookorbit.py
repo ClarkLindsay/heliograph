@@ -20,6 +20,12 @@ class Look:
     def editions(self, bid): return self.eds.get(bid, [])
     def by_isbn(self, isbn): return self.books["dune"] if isbn == "9780441013593" else None
     def search(self, title, authors): return [dict(b, users=1) for b in self.books.values() if title.lower() in b["title"].lower()]
+    def edition(self, eid):
+        for bid, eds in self.eds.items():
+            for e in eds:
+                if str(e["id"]) == str(eid):
+                    return e, next(b for b in self.books.values() if b["id"] == bid)
+        return None, None
 
 
 def book(i, title, authors, files, **kw):
@@ -144,8 +150,62 @@ def test_scan_pauses_at_hardcovers_daily_limit():
             bo.HardcoverLookup = orig
 
 
+def test_parse_ref():
+    assert bo.parse_ref("https://hardcover.app/books/dune") == ("book", "dune")
+    assert bo.parse_ref("https://hardcover.app/books/dune/editions/30530618?x=1") == ("edition", "30530618")
+    assert bo.parse_ref("edition:12") == ("edition", "12") and bo.parse_ref("Edition 12") == ("edition", "12")
+    assert bo.parse_ref(" The-Hobbit ") == ("book", "the-hobbit") and bo.parse_ref("427") == ("book", "427")
+    try:
+        bo.parse_ref("not a link!"); assert False
+    except ValueError:
+        pass
+
+
+def test_find_on_hardcover_and_paste():
+    from heliograph.config import Config
+    from heliograph.engine import Engine
+    from heliograph.state import State
+
+    class Client:
+        def __init__(self): self.updates = []
+        def books(self): return [book(1, "Dune", ["Frank Herbert"], ["m4b"], language="English"),
+                                 book(2, "Some Unknown Book", ["Nobody"], ["epub"])]
+        def update(self, i, fields): self.updates.append((i, dict(fields)))
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        cfg, db = Config(os.path.join(tmp, "c.json")), os.path.join(tmp, "s.db")
+        eng = Engine(cfg, [], State(db), logging.getLogger("t"), hardcover=object())
+        client = Client()
+        eng.bookorbit = lambda: client
+        orig = bo.HardcoverLookup
+        bo.HardcoverLookup = lambda hc: Look()
+        try:
+            eng.start_bookorbit_scan()
+            while eng.bo_job["running"]: time.sleep(0.05)
+            assert [i["title"] for i in eng.bo_job["items"]] == ["Dune", "Some Unknown Book"]
+            # searching with your own words; the verdict says the Hobbit isn't this book
+            r = eng.bookorbit_search("2", "hobbit")["results"]
+            assert [c["title"] for c in r] == ["The Hobbit"] and r[0]["url"].endswith("/the-hobbit")
+            p = eng.bookorbit_link("2", "the-hobbit")                     # you link it anyway: your call
+            assert client.updates[-1] == (2, {"hardcoverId": "the-hobbit", "hardcoverEditionId": "21"}) and p["result"] == "✓ updated"
+            # a pasted edition URL is used exactly, even an audiobook, and the language fix goes with it
+            eng.bookorbit_link("1", "https://hardcover.app/books/dune/editions/13")
+            assert client.updates[-1] == (1, {"hardcoverId": "dune", "hardcoverEditionId": "13", "language": "eng"})
+            for bad in ("nope-not-a-book", "edition:999"):
+                try:
+                    eng.bookorbit_link("1", bad); assert False
+                except ValueError:
+                    pass
+            # the list survives a restart, and both books are skipped by the next scan
+            eng2 = Engine(cfg, [], State(db), logging.getLogger("t"), hardcover=object())
+            assert [i["result"] for i in eng2.bo_job["items"]] == ["✓ updated", "✓ updated"] and not eng2.bo_job["running"]
+            assert set(eng2._bo_seen()) == {"1", "2"}
+        finally:
+            bo.HardcoverLookup = orig
+
+
 ALL = [test_kind_and_edition_rules, test_plan_book, test_engine_scan_apply_and_ebook_switch,
-       test_scan_pauses_at_hardcovers_daily_limit]
+       test_scan_pauses_at_hardcovers_daily_limit, test_parse_ref, test_find_on_hardcover_and_paste]
 
 if __name__ == "__main__":
     for t in ALL:

@@ -43,6 +43,13 @@ class Engine:
         self.ed_job = {"running": False}
         self.dates_job = {"running": False}
         self.bo_job = {"running": False}
+        self._bo_found = {}                              # BookOrbit book key -> the last Hardcover search you ran for it
+        try:                                             # the last scan's list survives a restart
+            saved = json.loads(self.state.get("bookorbit_job") or "null")
+            if isinstance(saved, dict) and saved.get("items") is not None:
+                self.bo_job = dict(saved, running=False)
+        except (TypeError, ValueError, AttributeError):
+            pass
         self.job_entries, self.job_results = [], []
         self.import_dir = (Path(data_dir) if data_dir else APP_DIR) / "imports"      # each user's own import logs
         self._covers = {}
@@ -692,6 +699,7 @@ class Engine:
             if seen is not None:
                 self.state.set("bookorbit_seen", json.dumps(seen))
             job.update(running=False, finished=time.time())
+            self._bo_save()
 
     def apply_bookorbit(self, keys):
         job = self.bo_job
@@ -726,22 +734,99 @@ class Engine:
             job["message"] = f"Failed: {e}"
         finally:
             job.update(running=False, finished=time.time())
+            self._bo_save()
+
+    def _bo_save(self):
+        """Keep the list (not the running flag) so a restart doesn't cost another scan."""
+        try:
+            self.state.set("bookorbit_job", json.dumps({k: v for k, v in self.bo_job.items() if k != "running"}, default=str))
+        except Exception as e:
+            self.log.debug("BookOrbit: couldn't save the list: %s", e)
+
+    def _bo_item(self, key):
+        p = next((x for x in self.bo_job.get("items") or [] if x["key"] == key), None)
+        if not p:
+            raise KeyError("that book isn't in the BookOrbit list (scan again)")
+        if self.bo_job.get("running"):
+            raise ValueError("Wait for the BookOrbit scan or update to finish")
+        return p
+
+    def _bo_link(self, p, book, ed, how):
+        """Write the Hardcover book + edition you chose (and the language fix, if any) to BookOrbit."""
+        changes = {"hardcoverId": book.get("slug") or str(book["id"]), "hardcoverEditionId": str(ed["id"])}
+        if p["changes"].get("language"):
+            changes["language"] = p["changes"]["language"]
+        self.bookorbit().update(p["id"], changes)
+        p.update(changes=changes, result="✓ updated", problem=None, suggestion=None, book=book, edition=ed,
+                 why=[f"{how}: “{book['title']}”, {ed.get('edition_format') or ed.get('format') or 'edition'} {ed['id']}"])
+        seen = self._bo_seen()
+        seen[str(p["id"])] = bookorbit.signature(dict(p.get("source") or {}, **changes))
+        self.state.set("bookorbit_seen", json.dumps(seen))
+        self._bo_save()
+        self.log.info("BookOrbit: '%s' linked to Hardcover '%s' (%s), edition %s", p["title"], book["title"], how, ed["id"])
+        return p
+
+    def _bo_edition_for(self, p, look, book):
+        ed = bookorbit.pick_edition(look.editions(book["id"]), p["kind"], [i for i in (p.get("isbn13"), p.get("isbn10")) if i])
+        if not ed:
+            raise ValueError(f"Hardcover has no English edition of “{book['title']}”: paste the edition's URL to use it anyway")
+        return ed
 
     def bookorbit_use_suggestion(self, key):
         """You accepted a suggested Hardcover book: work out its edition and write both."""
-        p = next((x for x in self.bo_job.get("items") or [] if x["key"] == key), None)
-        if not p or not p.get("suggestion"):
+        p = self._bo_item(key)
+        if not p.get("suggestion"):
             raise KeyError("no suggestion for that book")
         look = bookorbit.HardcoverLookup(self.hc())
         s = p["suggestion"]
-        ed = bookorbit.pick_edition(look.editions(s["id"]), p["kind"], [i for i in (p.get("isbn13"), p.get("isbn10")) if i])
-        if not ed:
-            raise ValueError("Hardcover has no English edition of that book")
-        changes = dict(p["changes"], hardcoverId=s.get("slug") or str(s["id"]), hardcoverEditionId=str(ed["id"]))
-        self.bookorbit().update(p["id"], changes)
-        p.update(changes=changes, result="✓ updated", problem=None, suggestion=None)
-        self.log.info("BookOrbit: '%s' linked to Hardcover '%s' (your choice), edition %s", p["title"], s["title"], ed["id"])
-        return p
+        book = {"id": s["id"], "slug": s.get("slug"), "title": s["title"], "authors": s.get("authors") or []}
+        return self._bo_link(p, book, self._bo_edition_for(p, look, book), "the suggestion")
+
+    def bookorbit_search(self, key, query=None):
+        """Hardcover's search results for one book in the list, each with the matcher's verdict (one Hardcover request)."""
+        p = self._bo_item(key)
+        look = bookorbit.HardcoverLookup(self.hc())
+        query = (query or "").strip()
+        cands = look.search(query, []) if query else look.search(smartmatch.clean_title(p["title"]), p["authors"])
+        isbns = [i for i in (p.get("isbn13"), p.get("isbn10")) if i]
+        for c in cands:
+            c["isbn"] = next((i for i in isbns if i in c.get("isbns", ())), None)
+        self._bo_found[key] = cands
+        out = []
+        for r in self.matcher.evaluate(p["title"], p["authors"], cands, isbns):
+            c = r["cand"]
+            out.append({"id": c["id"], "slug": c.get("slug"), "title": c["title"], "authors": c["authors"][:3],
+                        "users": c.get("users"), "pages": c.get("pages"), "cover": c.get("cover"),
+                        "url": f"https://hardcover.app/books/{c.get('slug') or c['id']}",
+                        "match": {"ok": r["ok"], "blocked": r["blocked"], "confidence": round(r["confidence"], 2),
+                                  "reasons": r["reasons"]}})
+        return {"results": out}
+
+    def bookorbit_link(self, key, ref):
+        """You picked a search result, or pasted a Hardcover book / edition: link it (the edition picked for your
+        files unless you pasted one)."""
+        p = self._bo_item(key)
+        what, ident = bookorbit.parse_ref(str(ref))
+        look = bookorbit.HardcoverLookup(self.hc())
+        if what == "edition":
+            ed, book = look.edition(ident)
+            if not ed:
+                raise ValueError(f"Hardcover has no edition {ident}")
+            return self._bo_link(p, book, ed, "your edition")
+        book = look.book(ident)
+        if not book:
+            raise ValueError(f"Hardcover has no book “{ident}”")
+        found = self._bo_found.get(key) or []
+        idx = next((n for n, c in enumerate(found) if str(c["id"]) == str(book["id"]) or c.get("slug") == ident), None)
+        if idx is not None:                              # chosen from the search: the matcher learns from it
+            isbns = [i for i in (p.get("isbn13"), p.get("isbn10")) if i]
+            try:
+                if self.matcher.learn(p["title"], p["authors"], found, idx, isbns):
+                    self.state.set("match_weights", json.dumps(self.matcher.weights))
+                    self.state.set("match_learned", str(int(self.state.get("match_learned") or 0) + 1))
+            except Exception as e:
+                self.log.debug("matcher didn't learn from the BookOrbit pick: %s", e)
+        return self._bo_link(p, book, self._bo_edition_for(p, look, book), "your choice")
 
     def bookorbit_ebooks(self, force=False):
         """An audiobook you've since added an ebook to: switch its Hardcover edition to the ebook (if you allow it)."""

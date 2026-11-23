@@ -131,8 +131,41 @@ class HardcoverLookup:
             if d.get("id"):
                 out.append({"id": int(d["id"]), "slug": d.get("slug"), "title": d.get("title") or "",
                             "authors": d.get("author_names") or [], "users": d.get("users_count") or 0,
-                            "pages": d.get("pages"), "isbns": [str(i) for i in d.get("isbns") or []]})
+                            "pages": d.get("pages"), "isbns": [str(i) for i in d.get("isbns") or []],
+                            "cover": (d.get("image") or {}).get("url") if isinstance(d.get("image"), dict) else None})
         return out
+
+    def edition(self, edition_id):
+        """One edition by id, with its book: (edition, book) or (None, None)."""
+        rows = self.hc._q("""query($e: Int!) { editions(where: {id: {_eq: $e}}, limit: 1) { id title isbn_13 isbn_10
+            reading_format_id edition_format users_count pages language { language }
+            book { id slug title contributions { contribution author { name } } } } }""", {"e": int(edition_id)})["editions"]
+        if not rows or not rows[0].get("book"):
+            return None, None
+        e = rows[0]
+        ed = {"id": e["id"], "title": e.get("title"), "isbn13": e.get("isbn_13"), "isbn10": e.get("isbn_10"),
+              "reading_format_id": _format_id(e), "edition_format": e.get("edition_format"), "users": e.get("users_count") or 0,
+              "pages": e.get("pages"), "language": (e.get("language") or {}).get("language")}
+        ed["format"] = FORMAT.get(ed["reading_format_id"])
+        return ed, _book(e["book"])
+
+
+HC_URL = re.compile(r"hardcover\.app/books/([^/?#\s]+)(?:/editions/(\d+))?", re.I)
+
+
+def parse_ref(ref):
+    """What you pasted -> ("edition", id) or ("book", slug-or-id). Accepts a Hardcover book or edition URL,
+    "edition:123", a slug, or a book id."""
+    ref = (ref or "").strip()
+    m = HC_URL.search(ref)
+    if m:
+        return ("edition", m.group(2)) if m.group(2) else ("book", m.group(1))
+    m = re.fullmatch(r"(?:edition[:\s#]*)(\d+)", ref, re.I)
+    if m:
+        return "edition", m.group(1)
+    if re.fullmatch(r"[a-z0-9][a-z0-9-]*", ref, re.I):
+        return "book", ref.lower() if not ref.isdigit() else ref
+    raise ValueError("Paste a Hardcover book or edition URL, a book slug or id, or edition:<id>")
 
 
 def _format_id(e):

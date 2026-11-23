@@ -210,11 +210,36 @@ function bookorbitTab(){const m=$('#main'),tok=tabToken;
     h('a',{href:`https://hardcover.app/books/${i.suggestion.slug||i.suggestion.id}`,target:'_blank',rel:'noopener noreferrer'},'view'),' ',
     h('button',{class:'btn small pri',disabled:d.running,onclick:async e=>{e.target.disabled=true;try{const r=await api('/api/bookorbit/suggestion',{key:i.key});Object.assign(i,r);d.sig='';render()}catch(x){e.target.disabled=false;res.textContent=' '+x.message}}},'Use this')):null;
   const hc=i.book?h('a',{class:'small',href:`https://hardcover.app/books/${i.book.slug||i.book.id}`,target:'_blank',rel:'noopener noreferrer'},'Hardcover ↗'):null;
+  const panel=h('div');
+  const after=r=>{Object.assign(i,r);d.sel.delete(i.key);d.sig='';render()};
+  const finder=()=>{if(panel.firstChild){panel.replaceChildren();return}
+   const q=h('input',{type:'text',class:'grow',value:[i.title,...(i.authors||[]).slice(0,1)].join(' ')});
+   const paste=h('input',{type:'text',class:'grow',placeholder:'…or paste a Hardcover book or edition URL, a slug or book id, or edition:<id>'});
+   const list=h('div'),msg=h('div');
+   const use=async(ref,btn)=>{if(btn)btn.disabled=true;try{after(await api('/api/bookorbit/link',{key:i.key,ref}))}catch(x){if(btn)btn.disabled=false;note(msg,x.message,'bad')}};
+   const row=c=>h('div',{class:'cand'},
+     c.cover?h('img',{class:'thumb',src:c.cover,alt:'',loading:'lazy',referrerpolicy:'no-referrer'}):h('div',{class:'thumb'}),
+     h('div',{class:'grow'},h('b',{},c.title),h('div',{class:'small mut'},(c.authors||[]).join(', ')+(c.pages?' · '+c.pages+' pages':'')+(c.users?` · ${c.users} readers`:'')),
+       c.match?h('div',{class:'small',style:`color:var(--${c.match.blocked?'bad':c.match.ok?'ok':'mut'})`},
+         c.match.blocked?'Not this book: '+c.match.blocked:`${c.match.ok?'Match':'Possible match'} · ${pct(c.match.confidence)} · ${c.match.reasons.join('; ')}`):null),
+     h('a',{href:c.url,target:'_blank',rel:'noopener noreferrer',class:'small'},'open ↗'),
+     h('button',{class:'btn small pri',onclick:e=>use(c.slug||String(c.id),e.target)},'Use this'));
+   const run=async()=>{note(list,'Searching Hardcover…');
+     try{const r=await api('/api/bookorbit/search',{key:i.key,query:q.value});list.replaceChildren(...(r.results.length?r.results.map(row):[h('p',{class:'mut small'},'No results: try fewer words, or paste the book’s Hardcover URL.')]))}
+     catch(x){note(list,x.message,'bad')}};
+   q.addEventListener('keydown',e=>{if(e.key==='Enter')run()});
+   panel.replaceChildren(h('div',{class:'msg',style:'margin-top:6px'},
+     h('div',{class:'row'},q,h('button',{class:'btn small',onclick:run},'Search')),list,
+     h('div',{class:'row',style:'margin-top:6px'},paste,h('button',{class:'btn small',onclick:e=>use(paste.value,e.target)},'Link')),
+     h('div',{class:'small mut'},'A book: Heliograph picks the edition for your files (ebook, else audiobook, else print, English). An edition URL: that exact edition.'),msg));
+   run()};
+  const findBtn=!done?h('button',{class:'btn small',disabled:d.running,onclick:finder},'Find on Hardcover…'):null;
   return h('div',{class:'cand',style:'align-items:flex-start'},cb,h('div',{class:'grow'},
     h('div',{},h('b',{},i.title),h('span',{class:'small mut'},' · '+(i.authors||[]).slice(0,2).join(', ')+` · ${i.kind}`),' ',hc),
     i.why&&i.why.length?h('div',{class:'small'},i.why.join(' · ')):null,
     i.problem?h('div',{class:'small',style:'color:var(--warn)'},i.problem):null,sug,res,
-    i.result?h('div',{class:'small',style:`color:var(--${done?'ok':'bad'})`},i.result):null))}
+    i.result?h('div',{class:'small',style:`color:var(--${done?'ok':'bad'})`},i.result):null,
+    findBtn?h('div',{style:'margin-top:4px'},findBtn):null,panel))}
  function render(){const items=d.items,sg=sigOf([items.map(i=>[i.key,i.result,Object.keys(i.changes).length]),[...d.sel],d.running,d.filter]);
   const n=items.filter(i=>d.sel.has(i.key)&&!isDone(i)&&Object.keys(i.changes).length).length,show=items.length&&!d.running;
   d.apply.style.display=show?'':'none';d.apply.disabled=!n;setText(d.apply,`Apply ${n} change(s)`);d.bulk.style.display=show?'':'none';
