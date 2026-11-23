@@ -189,40 +189,59 @@ function hardcoverTab(){const m=$('#main'),tok=tabToken,u={};
 /* BookOrbit: the right Hardcover book and edition for every book, so BookOrbit's own Hardcover sync is ready. */
 function bookorbitTab(){const m=$('#main'),tok=tabToken;
  const FIX={relink:'Wrong Hardcover book',link:'Not linked yet',edition:'Edition',language:'Language',ok:'Needs a look',error:'Error'};
- const d={msg:h('div',{class:'small'}),bar:h('i',{style:'width:0%'}),list:h('div'),out:h('div'),sel:new Set(),seen:0,picked:0,sig:'',items:[],filter:''};
+ // items keep their identity across polls (merged by key) and each row is rebuilt only when its own data changes,
+ // so ticking a box or using a suggestion touches one row, not the whole list
+ const d={msg:h('div',{class:'small'}),bar:h('i',{style:'width:0%'}),list:h('div',{style:'margin-top:6px'}),out:h('div'),sel:new Set(),seen:0,picked:0,
+          items:[],byKey:new Map(),rows:new Map(),filter:'',fsig:'',lsig:'',base:''};
  const isDone=i=>/^✓/.test(i.result||'');
+ const canApply=i=>!isDone(i)&&(Object.keys(i.changes||{}).length>0||!!i.suggestion);
  const full=h('input',{type:'checkbox'});
  d.scan=h('button',{class:'btn',onclick:async()=>{try{await api('/api/bookorbit/scan',{full:full.checked});setTimeout(()=>tok===tabToken&&poll(),300)}catch(e){note(d.out,e.message,'bad')}}},'Scan BookOrbit');
  d.apply=h('button',{class:'btn pri',style:'display:none',onclick:async()=>{
-   const keys=d.items.filter(i=>d.sel.has(i.key)&&!isDone(i)&&Object.keys(i.changes).length).map(i=>i.key);
-   if(!confirm(`Update ${keys.length} book(s) in BookOrbit?`))return;
+   const keys=d.items.filter(i=>d.sel.has(i.key)&&canApply(i)).map(i=>i.key);
+   if(!keys.length||!confirm(`Update ${keys.length} book(s) in BookOrbit?`))return;
    try{await api('/api/bookorbit/apply',{keys});setTimeout(()=>tok===tabToken&&poll(),300)}catch(e){note(d.out,e.message,'bad')}}},'Apply');
- const pick=f=>{d.sel.clear();d.items.forEach(i=>{if(!isDone(i)&&Object.keys(i.changes).length&&f(i))d.sel.add(i.key)});d.sig='';render()};
+ const vis=()=>d.filter?d.items.filter(i=>i.fix===d.filter):d.items;
+ function syncSel(){                                          // checkboxes + the Apply count, nothing else
+  for(const [k,r] of d.rows)if(r.cb)r.cb.checked=d.sel.has(k);
+  const n=d.items.filter(i=>d.sel.has(i.key)&&canApply(i)).length,show=d.items.length&&!d.running;
+  d.apply.style.display=show?'':'none';d.apply.disabled=!n;setText(d.apply,`Apply ${n} change(s)`);d.bulk.style.display=show?'':'none'}
+ const pick=f=>{d.sel.clear();vis().forEach(i=>{if(canApply(i)&&f(i))d.sel.add(i.key)});syncSel()};
  const link=(t,f)=>h('a',{href:'#',onclick:e=>{e.preventDefault();pick(f)}},t);
- d.bulk=h('span',{class:'small',style:'display:none'},'Select ',link('all',()=>true),' · ',link('none',()=>false));
+ d.bulk=h('span',{class:'small',style:'display:none'},'Select ',link('all',()=>true),' · ',link('suggestions',i=>!!i.suggestion&&!Object.keys(i.changes||{}).includes('hardcoverId')),' · ',link('none',()=>false));
  d.filters=h('div',{class:'row small',style:'margin-top:6px'});
- const ch=c=>{const v=d.items.filter(i=>i.fix===c);return v.length?h('a',{href:'#',class:'chip'+(d.filter===c?' recorded':''),onclick:e=>{e.preventDefault();d.filter=d.filter===c?'':c;d.sig='';render()}},`${FIX[c]||c} (${v.length})`):null};
- function line(i){const done=isDone(i),has=Object.keys(i.changes).length;
-  const cb=has?h('input',{type:'checkbox',checked:d.sel.has(i.key)&&!done,disabled:done||d.running,onchange:e=>{e.target.checked?d.sel.add(i.key):d.sel.delete(i.key);d.sig='';render()}}):h('span',{style:'width:13px'});
-  const res=h('span',{class:'small'});
-  const sug=i.suggestion?h('div',{class:'small'},'Suggested: ',h('b',{},i.suggestion.title),' · '+(i.suggestion.authors||[]).slice(0,2).join(', '),
+ const ch=c=>{const v=d.items.filter(i=>i.fix===c);return v.length?h('a',{href:'#',class:'chip'+(d.filter===c?' recorded':''),onclick:e=>{e.preventDefault();d.filter=d.filter===c?'':c;render()}},`${FIX[c]||c} (${v.length})`):null};
+ const ext=(href,t)=>h('a',{class:'small',href,target:'_blank',rel:'noopener noreferrer'},t);
+ const hcUrl=(b,ed)=>`https://hardcover.app/books/${b.slug||b.id}`+(ed&&ed.id?`/editions/${ed.id}`:'');
+ const changed=i=>{d.rows.delete(i.key);render()};           // one row's data changed: rebuild just that row
+ function line(i){const done=isDone(i),can=canApply(i);
+  const cb=can?h('input',{type:'checkbox',checked:d.sel.has(i.key),disabled:d.running,onchange:e=>{e.target.checked?d.sel.add(i.key):d.sel.delete(i.key);syncSel()}}):null;
+  const res=h('div',{class:'small'});
+  const busy=(btn,t)=>{btn.disabled=true;btn.dataset.t=btn.textContent;btn.textContent=t};
+  const unbusy=btn=>{btn.disabled=false;btn.textContent=btn.dataset.t||btn.textContent};
+  const took=r=>{Object.assign(i,r);d.sel.delete(i.key);changed(i);syncSel()};
+  const sug=i.suggestion&&!done?h('div',{class:'small'},'Suggested: ',h('b',{},i.suggestion.title),' · '+(i.suggestion.authors||[]).slice(0,2).join(', '),
     h('span',{class:'mut'},` · ${pct(i.suggestion.confidence)} sure: ${i.suggestion.reasons.join('; ')}`),' ',
-    h('a',{href:`https://hardcover.app/books/${i.suggestion.slug||i.suggestion.id}`,target:'_blank',rel:'noopener noreferrer'},'view'),' ',
-    h('button',{class:'btn small pri',disabled:d.running,onclick:async e=>{e.target.disabled=true;try{const r=await api('/api/bookorbit/suggestion',{key:i.key});Object.assign(i,r);d.sig='';render()}catch(x){e.target.disabled=false;res.textContent=' '+x.message}}},'Use this')):null;
-  const hc=i.book?h('a',{class:'small',href:`https://hardcover.app/books/${i.book.slug||i.book.id}`,target:'_blank',rel:'noopener noreferrer'},'Hardcover ↗'):null;
+    ext(hcUrl(i.suggestion),'view ↗'),' ',
+    h('button',{class:'btn small pri',disabled:d.running,onclick:async e=>{const btn=e.target;busy(btn,'Linking…');
+      try{took(await api('/api/bookorbit/suggestion',{key:i.key}))}catch(x){unbusy(btn);note(res,x.message,'bad')}}},'Use this')):null;
+  const cur=i.current&&i.current.hardcoverId;
+  const links=h('span',{class:'small'},' ',
+    d.base?ext(`${d.base}/book/${i.id}`,'BookOrbit ↗'):null,
+    cur&&(!i.book||String(cur)!==String(i.book.slug||i.book.id))?[' · ',ext(`https://hardcover.app/books/${cur}`+(i.current.hardcoverEditionId?`/editions/${i.current.hardcoverEditionId}`:''),'linked now ↗')]:null,
+    i.book?[' · ',ext(hcUrl(i.book,i.edition),done?'Hardcover ↗':'Hardcover (proposed) ↗')]:null);
   const panel=h('div');
-  const after=r=>{Object.assign(i,r);d.sel.delete(i.key);d.sig='';render()};
   const finder=()=>{if(panel.firstChild){panel.replaceChildren();return}
    const q=h('input',{type:'text',class:'grow',value:[i.title,...(i.authors||[]).slice(0,1)].join(' ')});
    const paste=h('input',{type:'text',class:'grow',placeholder:'…or paste a Hardcover book or edition URL, a slug or book id, or edition:<id>'});
    const list=h('div'),msg=h('div');
-   const use=async(ref,btn)=>{if(btn)btn.disabled=true;try{after(await api('/api/bookorbit/link',{key:i.key,ref}))}catch(x){if(btn)btn.disabled=false;note(msg,x.message,'bad')}};
+   const use=async(ref,btn)=>{busy(btn,'Linking…');try{took(await api('/api/bookorbit/link',{key:i.key,ref}))}catch(x){unbusy(btn);note(msg,x.message,'bad')}};
    const row=c=>h('div',{class:'cand'},
      c.cover?h('img',{class:'thumb',src:c.cover,alt:'',loading:'lazy',referrerpolicy:'no-referrer'}):h('div',{class:'thumb'}),
      h('div',{class:'grow'},h('b',{},c.title),h('div',{class:'small mut'},(c.authors||[]).join(', ')+(c.pages?' · '+c.pages+' pages':'')+(c.users?` · ${c.users} readers`:'')),
        c.match?h('div',{class:'small',style:`color:var(--${c.match.blocked?'bad':c.match.ok?'ok':'mut'})`},
          c.match.blocked?'Not this book: '+c.match.blocked:`${c.match.ok?'Match':'Possible match'} · ${pct(c.match.confidence)} · ${c.match.reasons.join('; ')}`):null),
-     h('a',{href:c.url,target:'_blank',rel:'noopener noreferrer',class:'small'},'open ↗'),
+     ext(c.url,'open ↗'),
      h('button',{class:'btn small pri',onclick:e=>use(c.slug||String(c.id),e.target)},'Use this'));
    const run=async()=>{note(list,'Searching Hardcover…');
      try{const r=await api('/api/bookorbit/search',{key:i.key,query:q.value});list.replaceChildren(...(r.results.length?r.results.map(row):[h('p',{class:'mut small'},'No results: try fewer words, or paste the book’s Hardcover URL.')]))}
@@ -234,28 +253,36 @@ function bookorbitTab(){const m=$('#main'),tok=tabToken;
      h('div',{class:'small mut'},'A book: Heliograph picks the edition for your files (ebook, else audiobook, else print, English). An edition URL: that exact edition.'),msg));
    run()};
   const findBtn=!done?h('button',{class:'btn small',disabled:d.running,onclick:finder},'Find on Hardcover…'):null;
-  return h('div',{class:'cand',style:'align-items:flex-start'},cb,h('div',{class:'grow'},
-    h('div',{},h('b',{},i.title),h('span',{class:'small mut'},' · '+(i.authors||[]).slice(0,2).join(', ')+(i.kind?` · ${i.kind}`:'')),' ',hc),
+  const el=h('div',{class:'cand',style:'align-items:flex-start'},cb||h('span',{style:'width:13px;flex:none'}),h('div',{class:'grow'},
+    h('div',{},h('b',{},i.title),h('span',{class:'small mut'},' · '+(i.authors||[]).slice(0,2).join(', ')+(i.kind?` · ${i.kind}`:'')),links),
     i.why&&i.why.length?h('div',{class:'small'},i.why.join(' · ')):null,
-    i.problem?h('div',{class:'small',style:'color:var(--warn)'},i.problem):null,sug,res,
-    i.result?h('div',{class:'small',style:`color:var(--${done?'ok':'bad'})`},i.result):null,
-    findBtn?h('div',{style:'margin-top:4px'},findBtn):null,panel))}
- function render(){const items=d.items,sg=sigOf([items.map(i=>[i.key,i.result,Object.keys(i.changes).length]),[...d.sel],d.running,d.filter]);
-  const n=items.filter(i=>d.sel.has(i.key)&&!isDone(i)&&Object.keys(i.changes).length).length,show=items.length&&!d.running;
-  d.apply.style.display=show?'':'none';d.apply.disabled=!n;setText(d.apply,`Apply ${n} change(s)`);d.bulk.style.display=show?'':'none';
-  if(sg===d.sig)return;d.sig=sg;
-  fill(d.filters,['relink','link','edition','language','ok','error'].map(ch));
-  const vis=d.filter?items.filter(i=>i.fix===d.filter):items;
-  fill(d.list,vis.length?h('div',{style:'margin-top:6px'},vis.slice(0,400).map(line),vis.length>400?h('p',{class:'small mut'},`…and ${vis.length-400} more (use the filters).`):null):null)}
+    i.problem&&!done?h('div',{class:'small',style:'color:var(--warn)'},i.problem):null,sug,
+    i.result?h('div',{class:'small',style:`color:var(--${done?'ok':'bad'})`},i.result):null,res,
+    findBtn?h('div',{style:'margin-top:4px'},findBtn):null,panel));
+  return {el,cb}}
+ const rowSig=i=>sigOf([i.result,i.changes,i.suggestion&&i.suggestion.id,i.problem,i.book&&i.book.id,i.edition&&i.edition.id,d.running,!!d.base]);
+ function render(){
+  const fs=sigOf([d.items.map(i=>i.fix),d.filter]);
+  if(fs!==d.fsig){d.fsig=fs;fill(d.filters,['relink','link','edition','language','ok','error'].map(ch))}
+  const v=vis(),shown=v.slice(0,400);
+  for(const i of shown){const r=d.rows.get(i.key),sg=rowSig(i);if(!r||r.sig!==sg){const n=line(i);n.sig=sg;n.item=i;d.rows.set(i.key,n);if(r)r.el.replaceWith(n.el)}}
+  const ls=sigOf(shown.map(i=>i.key));
+  if(ls!==d.lsig){d.lsig=ls;d.list.replaceChildren(...shown.map(i=>d.rows.get(i.key).el),...(v.length>400?[h('p',{class:'small mut'},`…and ${v.length-400} more (use the filters).`)]:[]))}
+  for(const k of [...d.rows.keys()])if(!d.byKey.has(k))d.rows.delete(k);
+  syncSel()}
  async function poll(){const j=await api('/api/bookorbit');if(tok!==tabToken)return 8000;
-  if(j.started&&j.started!==d.seen){d.seen=j.started;d.sel.clear();d.picked=0}
-  if(j.phase==='scan'&&!j.running&&j.started&&d.picked!==j.started){d.picked=j.started;(j.items||[]).forEach(i=>{if(i.pick)d.sel.add(i.key)})}
-  d.items=j.items||[];d.running=!!j.running;d.scan.disabled=d.running;
+  if(j.started&&j.started!==d.seen){d.seen=j.started;d.sel.clear();d.picked=0;d.byKey.clear();d.rows.clear();d.lsig=''}
+  if(j.bo_url&&!d.base){try{const u=new URL(j.bo_url);if(u.hostname==='host.docker.internal')u.hostname=location.hostname;d.base=(u.origin+u.pathname).replace(/\/+$/,'')}catch(e){}}
+  const items=(j.items||[]).map(it=>{const o=d.byKey.get(it.key);if(o){Object.assign(o,it);return o}d.byKey.set(it.key,it);return it});
+  d.items=items;
+  if(j.phase==='scan'&&!j.running&&j.started&&d.picked!==j.started){d.picked=j.started;items.forEach(i=>{if(i.pick)d.sel.add(i.key)})}
+  if(d.running!==!!j.running){d.running=!!j.running;d.rows.clear();d.lsig=''}
+  d.scan.disabled=d.running;
   d.bar.style.width=(j.total?Math.round(100*j.done/j.total):0)+'%';
   setText(d.msg,j.started?(j.message||'')+(j.running?` · ${j.done}/${j.total}`:''):'');
   render();return j.running?1500:8000}
  fill(m,h('div',{class:'card'},h('h3',{},'BookOrbit: Hardcover books and editions'),
-   h('p',{class:'small mut'},'Gets every book in your BookOrbit library ready for BookOrbit’s own Hardcover sync. For each book it checks the linked Hardcover book (wrong ones are replaced, missing ones found by ISBN, then title and author, with smart matching) and picks the English edition that matches your files: an ebook file → the ebook edition; only audio → the audiobook edition; neither → print. It never picks an audiobook when you have the ebook, and normalises the language field to “eng”. Nothing changes until you press Apply. Books found right are remembered and skipped next time unless they change.'),
+   h('p',{class:'small mut'},'Gets every book in your BookOrbit library ready for BookOrbit’s own Hardcover sync. For each book it checks the linked Hardcover book (wrong ones are replaced, missing ones found by ISBN, then title and author, with smart matching) and picks the English edition that matches your files: an ebook file → the ebook edition; only audio → the audiobook edition; neither → print. It never picks an audiobook when you have the ebook, and normalises the language field to “eng”. Nothing changes until you press Apply; a ticked book with only a suggestion is linked to the suggestion. Books found right are remembered and skipped next time unless they change.'),
    h('div',{class:'row'},h('span',{class:'grow'},d.msg),h('label',{class:'small'},full,' Recheck every book'),d.bulk,d.scan,d.apply),
    h('div',{class:'prog'},h('div',{class:'bar'},d.bar)),d.out,d.filters,d.list),
   h('p',{class:'small mut',style:'margin-top:10px'},'Set the BookOrbit URL and API key in Settings → BookOrbit. With “switch its Hardcover edition to the ebook” on, Heliograph checks every 6 hours for audiobooks you’ve added an ebook to and moves them to the ebook edition.'));
@@ -367,7 +394,7 @@ async function books(){const m=$('#main'),tok=tabToken;
 async function openBook(id){const md=$('#modal');const flash={};let cover=null,pushAll=null;api(`/api/book/${id}/cover`).then(r=>{if(r.url){cover=r.url;const el=document.querySelector('#hccover');if(el)el.setAttribute('src',r.url)}}).catch(()=>{});
  async function draw(b){md.replaceChildren(h('div',{class:'modal',onclick:e=>{if(e.target.className==='modal'){closeModal()}}},h('div',{class:'sheet'},
   h('div',{class:'row',style:'flex-wrap:nowrap'},h('img',{id:'hccover',class:'cover',alt:'',referrerpolicy:'no-referrer',src:cover||'data:image/gif;base64,R0lGODlhAQABAAAAACw='}),h('div',{class:'grow'},h('h2',{style:'margin:0'},b.title),h('div',{class:'mut'},b.authors.join(', '))),h('button',{class:'btn',onclick:()=>{closeModal()}},'Close')),
-  h('p',{class:'small'},'Hardcover: ',h('b',{},b.status||'—'),b.listened?` · ${hm(b.listened[0])} of ${hm(b.listened[1])} listened (${b.percent}%)`:b.pages!=null?` · page ${b.pages}${b.total_pages?' of '+b.total_pages:''}`:'',b.rating?` · rated ${b.rating}`:'',b.finished_on?` · finished ${b.finished_on}`:''),
+  h('p',{class:'small'},h('a',{href:`/api/book/${b.id}/hardcover`,target:'_blank',rel:'noopener noreferrer'},'Hardcover ↗'),': ',h('b',{},b.status||'—'),b.listened?` · ${hm(b.listened[0])} of ${hm(b.listened[1])} listened (${b.percent}%)`:b.pages!=null?` · page ${b.pages}${b.total_pages?' of '+b.total_pages:''}`:'',b.rating?` · rated ${b.rating}`:'',b.finished_on?` · finished ${b.finished_on}`:''),
   h('div',{class:'row',style:'margin:6px 0'},h('button',{class:'btn pri',onclick:async e=>{e.target.disabled=true;try{const r=await api(`/api/book/${b.id}/push-all`,{});pushAll=r.results;draw(r.book)}catch(x){pushAll=[{label:'Error',ok:false,error:x.message}];draw(b)}}},'Push to all services'),h('span',{class:'small mut'},'sends this book’s current status, progress and rating everywhere')),
   pushAll?h('div',{class:'msg small'},pushAll.map(r=>h('div',{},(r.ok?'✓ ':'✗ ')+r.label+': '+(r.ok?(r.pushed?`pushed ${r.pushed} update(s)`:(r.linked?'nothing needed pushing':'no match found yet')):r.error)))):null,
   Object.entries(b.services).map(([k,v])=>svc(b,k,v)))))}

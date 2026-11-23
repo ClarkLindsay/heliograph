@@ -204,8 +204,54 @@ def test_find_on_hardcover_and_paste():
             bo.HardcoverLookup = orig
 
 
+def test_apply_uses_a_ticked_suggestion_and_hardcover_url():
+    from heliograph.config import Config
+    from heliograph.engine import Engine
+    from heliograph.hardcover import Book
+    from heliograph.state import State
+
+    class Client:
+        def __init__(self): self.updates = []
+        def books(self): return [book(2, "Some Unknown Book", ["Nobody"], ["epub"])]
+        def update(self, i, fields): self.updates.append((i, dict(fields)))
+
+    class HC:
+        calls = 0
+        def _q(self, q, v):
+            HC.calls += 1
+            return {"books": [{"slug": "dune"}] if v["b"] == 1 else []}
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        st = State(os.path.join(tmp, "s.db"))
+        eng = Engine(Config(os.path.join(tmp, "c.json")), [], st, logging.getLogger("t"), hardcover=HC())
+        client = Client()
+        eng.bookorbit = lambda: client
+        orig = bo.HardcoverLookup
+        bo.HardcoverLookup = lambda hc: Look()
+        try:
+            eng.start_bookorbit_scan()
+            while eng.bo_job["running"]: time.sleep(0.05)
+            item = eng.bo_job["items"][0]
+            item["suggestion"] = {"id": 2, "slug": "the-hobbit", "title": "The Hobbit", "authors": ["J.R.R. Tolkien"],
+                                  "confidence": 0.6, "reasons": []}
+            eng.apply_bookorbit(["2"])                                   # ticked with only a suggestion: it's used
+            while eng.bo_job["running"]: time.sleep(0.05)
+            assert client.updates == [(2, {"hardcoverId": "the-hobbit", "hardcoverEditionId": "21"})], client.updates
+            assert item["result"] == "✓ updated" and eng.bo_job["message"].startswith("Done: 1 book(s)")
+            assert eng._bo_seen().get("2")                               # and remembered, so the next scan skips it
+        finally:
+            bo.HardcoverLookup = orig
+        # the Books tab's Hardcover link: the edition you have, looked up once
+        st.upsert_book(Book(ub_id=7, title="Dune", authors=["Frank Herbert"], book_id=1, edition_id=12), time.time())
+        assert eng.hardcover_url(7) == "https://hardcover.app/books/dune/editions/12"
+        assert eng.hardcover_url(7) and HC.calls == 1
+        st.upsert_book(Book(ub_id=8, title="Lost Book", authors=[], book_id=99), time.time())
+        assert eng.hardcover_url(8) == "https://hardcover.app/search?q=Lost%20Book"
+
+
 ALL = [test_kind_and_edition_rules, test_plan_book, test_engine_scan_apply_and_ebook_switch,
-       test_scan_pauses_at_hardcovers_daily_limit, test_parse_ref, test_find_on_hardcover_and_paste]
+       test_scan_pauses_at_hardcovers_daily_limit, test_parse_ref, test_find_on_hardcover_and_paste,
+       test_apply_uses_a_ticked_suggestion_and_hardcover_url]
 
 if __name__ == "__main__":
     for t in ALL:

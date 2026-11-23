@@ -708,7 +708,8 @@ class Engine:
         if job.get("running"):
             raise ValueError("A BookOrbit scan or update is already running")
         keys = set(keys or ())
-        todo = [p for p in job.get("items") or [] if p["key"] in keys and p["changes"] and not p["result"].startswith("✓")]
+        todo = [p for p in job.get("items") or [] if p["key"] in keys and (p["changes"] or p.get("suggestion"))
+                and not p["result"].startswith("✓")]
         if not todo:
             raise ValueError("Select at least one change")
         client = self.bookorbit()
@@ -720,8 +721,18 @@ class Engine:
         job, ok = self.bo_job, 0
         seen = self._bo_seen()
         try:
+            look = None
             for p in todo:
                 try:
+                    if p.get("suggestion") and "hardcoverId" not in p["changes"]:     # ticked with only a suggestion: use it
+                        look = look or bookorbit.HardcoverLookup(self.hc())
+                        s = p["suggestion"]
+                        book = {"id": s["id"], "slug": s.get("slug"), "title": s["title"], "authors": s.get("authors") or []}
+                        self._bo_link(p, book, self._bo_edition_for(p, look, book), "the suggestion", client)
+                        seen = self._bo_seen()
+                        ok += 1
+                        job["done"] += 1
+                        continue
                     client.update(p["id"], p["changes"])
                     p["result"] = "✓ updated"; ok += 1
                     self.log.info("BookOrbit: '%s' %s", p["title"], ", ".join(f"{k}={v}" for k, v in p["changes"].items()))
@@ -753,12 +764,12 @@ class Engine:
             raise ValueError("Wait for the BookOrbit scan or update to finish")
         return p
 
-    def _bo_link(self, p, book, ed, how):
+    def _bo_link(self, p, book, ed, how, client=None):
         """Write the Hardcover book + edition you chose (and the language fix, if any) to BookOrbit."""
         changes = {"hardcoverId": book.get("slug") or str(book["id"]), "hardcoverEditionId": str(ed["id"])}
         if p["changes"].get("language"):
             changes["language"] = p["changes"]["language"]
-        self.bookorbit().update(p["id"], changes)
+        (client or self.bookorbit()).update(p["id"], changes)
         p.update(changes=changes, result="✓ updated", problem=None, suggestion=None, book=book, edition=ed,
                  why=[f"{how}: “{book['title']}”, {ed.get('edition_format') or ed.get('format') or 'edition'} {ed['id']}"])
         seen = self._bo_seen()
@@ -829,6 +840,25 @@ class Engine:
             except Exception as e:
                 self.log.debug("matcher didn't learn from the BookOrbit pick: %s", e)
         return self._bo_link(p, book, self._bo_edition_for(p, look, book), "your choice")
+
+    def hardcover_url(self, ub_id):
+        """The book on Hardcover, at the edition your library entry uses (one lookup, then remembered)."""
+        b = self.state.get_book(ub_id)
+        if not b:
+            raise KeyError("no such book")
+        cache = self.__dict__.setdefault("_hc_urls", {})
+        key = (b.book_id, b.edition_id)
+        if key not in cache:
+            hc = self.hc()
+            slug = None
+            if b.book_id:
+                rows = hc._q("query($b: Int!) { books(where: {id: {_eq: $b}}, limit: 1) { slug } }", {"b": int(b.book_id)})["books"]
+                slug = rows[0]["slug"] if rows else None
+            if not slug:
+                from urllib.parse import quote
+                return "https://hardcover.app/search?q=" + quote(b.title)
+            cache[key] = f"https://hardcover.app/books/{slug}" + (f"/editions/{b.edition_id}" if b.edition_id else "")
+        return cache[key]
 
     def bookorbit_ebooks(self, force=False):
         """An audiobook you've since added an ebook to: switch its Hardcover edition to the ebook (if you allow it)."""

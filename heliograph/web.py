@@ -569,6 +569,15 @@ def make_handler(hub, cfg, server_log):
                 api = api_for(user)
                 if api is None:
                     return self._send(503, {"error": "Your settings couldn't be loaded; see the server log"})
+                m = re.fullmatch(r"/api/book/(\d+)/hardcover", path) if method == "GET" else None
+                if m:                                    # a link in the book view: off to Hardcover, at your edition
+                    try:
+                        url = api.e.hardcover_url(int(m.group(1)))
+                    except KeyError:
+                        raise ApiError(404, "no such book")
+                    except Exception as e:
+                        raise ApiError(502, f"Couldn't reach Hardcover: {str(e)[:200]}")
+                    return self._send(302, b"", "text/plain", extra={"Location": url})
                 if method == "GET" and path == "/api/import/log":
                     data, name, ctype = api.import_log((q.get("fmt") or ["txt"])[0])
                     return self._send(200, data, ctype, extra={"Content-Disposition": f'attachment; filename="{name}"'})
@@ -607,7 +616,7 @@ def make_handler(hub, cfg, server_log):
                 if path == "/api/removals": return api.e.pending_removals()
                 if path == "/api/hardcover/dates": return dict(api.e.dates_job)
                 if path == "/api/matching": return api.e.matching_status()
-                if path == "/api/bookorbit": return dict(api.e.bo_job)
+                if path == "/api/bookorbit": return dict(api.e.bo_job, bo_url=api.cfg["bookorbit"].get("url") or "")
                 m = re.fullmatch(r"/api/book/(\d+)", path)
                 if m: return api.book(int(m.group(1)))
                 m = re.fullmatch(r"/api/book/(\d+)/cover", path)
