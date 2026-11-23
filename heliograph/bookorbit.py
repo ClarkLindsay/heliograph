@@ -241,7 +241,15 @@ def pick_edition(editions, want, isbns=()):
 
 
 # ---------------------------------------------------------------- the plan for one book
-def plan_book(bo, look, matcher=None):
+def library_edition(library, book):
+    """The edition your Hardcover library has for this Hardcover book (the one you read), or None.
+    library: {slug or book id (str): edition id}."""
+    if not library or not book:
+        return None
+    return library.get(str(book.get("slug") or "")) or library.get(str(book.get("id") or ""))
+
+
+def plan_book(bo, look, matcher=None, library=None):
     """-> {"id", "title", "authors", "kind", "changes": {field: value}, "why": [..], "kind_of_fix": str, "problem": str|None}"""
     matcher = matcher or smartmatch.Matcher()
     title = bo.get("title") or ""
@@ -293,8 +301,18 @@ def plan_book(bo, look, matcher=None):
     elif bo.get("hardcoverId") and not current:
         out["why"].append(f"linked to Hardcover “{bo['hardcoverId']}”, which doesn't exist")
 
-    # 2. the edition
-    if book:
+    # 2. the edition: a book already in your Hardcover library keeps the edition you read there; otherwise the one
+    #    your files call for
+    mine = library_edition(library, book)
+    if book and mine:
+        if str(book.get("slug") or book["id"]) != str(bo.get("hardcoverId") or "") and "hardcoverId" not in locked:
+            out["changes"]["hardcoverId"] = book.get("slug") or str(book["id"])
+        if str(mine) != str(bo.get("hardcoverEditionId") or "") and "hardcoverEditionId" not in locked:
+            out["changes"]["hardcoverEditionId"] = str(mine)
+            out["why"].append(f"the edition in your Hardcover library (the one you read): {mine}")
+        out["edition"] = {"id": mine}
+        out["book"] = book
+    elif book:
         ed = pick_edition(look.editions(book["id"]), want, isbns)
         if not ed:
             out["problem"] = "Hardcover has no English edition of it"

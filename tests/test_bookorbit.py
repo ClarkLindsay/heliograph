@@ -8,6 +8,12 @@ def ed(i, fmt, lang="English", isbn=None, users=0, label=None):
             "edition_format": label, "users": users, "pages": None, "language": lang}
 
 
+class NoLib:
+    """A Hardcover account with an empty library."""
+    def __init__(self, books=()): self.lib = list(books)
+    def fetch_library(self): return list(self.lib)
+
+
 class Look:
     """Hardcover, faked."""
     def __init__(self):
@@ -84,7 +90,7 @@ def test_engine_scan_apply_and_ebook_switch():
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         cfg = Config(os.path.join(tmp, "c.json"))
         cfg["bookorbit"].update(url="http://bo", api_key="k", auto_ebook=True)
-        eng = Engine(cfg, [], State(os.path.join(tmp, "s.db")), logging.getLogger("t"), hardcover=object())
+        eng = Engine(cfg, [], State(os.path.join(tmp, "s.db")), logging.getLogger("t"), hardcover=NoLib())
         client = Client([book(1, "Dune", ["Frank Herbert"], ["m4b"]), book(2, "The Hobbit", ["J.R.R. Tolkien"], ["epub"],
                                                                       hardcoverId="the-hobbit", hardcoverEditionId="21")])
         eng.bookorbit = lambda: client
@@ -137,7 +143,7 @@ def test_scan_pauses_at_hardcovers_daily_limit():
 
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         cfg = Config(os.path.join(tmp, "c.json"))
-        eng = Engine(cfg, [], State(os.path.join(tmp, "s.db")), logging.getLogger("t"), hardcover=object())
+        eng = Engine(cfg, [], State(os.path.join(tmp, "s.db")), logging.getLogger("t"), hardcover=NoLib())
         eng.bookorbit = lambda: Client()
         orig = bo.HardcoverLookup
         bo.HardcoverLookup = lambda hc: Tired()
@@ -176,7 +182,7 @@ def test_find_on_hardcover_and_paste():
 
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         cfg, db = Config(os.path.join(tmp, "c.json")), os.path.join(tmp, "s.db")
-        eng = Engine(cfg, [], State(db), logging.getLogger("t"), hardcover=object())
+        eng = Engine(cfg, [], State(db), logging.getLogger("t"), hardcover=NoLib())
         client = Client()
         eng.bookorbit = lambda: client
         orig = bo.HardcoverLookup
@@ -199,7 +205,7 @@ def test_find_on_hardcover_and_paste():
                 except ValueError:
                     pass
             # the list survives a restart, and both books are skipped by the next scan
-            eng2 = Engine(cfg, [], State(db), logging.getLogger("t"), hardcover=object())
+            eng2 = Engine(cfg, [], State(db), logging.getLogger("t"), hardcover=NoLib())
             assert [i["result"] for i in eng2.bo_job["items"]] == ["✓ updated", "✓ updated"] and not eng2.bo_job["running"]
             assert set(eng2._bo_seen()) == {"1", "2"}
         finally:
@@ -219,6 +225,7 @@ def test_apply_uses_a_ticked_suggestion_and_hardcover_url():
 
     class HC:
         calls = 0
+        def fetch_library(self): return []
         def _q(self, q, v):
             HC.calls += 1
             return {"books": [{"slug": "dune"}] if v["b"] == 1 else []}
@@ -266,7 +273,7 @@ def test_set_aside_a_book_hardcover_doesnt_have():
             return super().search(title, authors)
 
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-        eng = Engine(Config(os.path.join(tmp, "c.json")), [], State(os.path.join(tmp, "s.db")), logging.getLogger("t"), hardcover=object())
+        eng = Engine(Config(os.path.join(tmp, "c.json")), [], State(os.path.join(tmp, "s.db")), logging.getLogger("t"), hardcover=NoLib())
         eng.bookorbit = lambda: Client()
         orig = bo.HardcoverLookup
         bo.HardcoverLookup = lambda hc: Counting()
@@ -360,7 +367,47 @@ def test_ratings_and_reviews_from_hardcover():
         assert eng.bookorbit_from_hardcover([dune]) == 0 and client.calls == []
 
 
-ALL = [test_ratings_and_reviews_from_hardcover, test_set_aside_a_book_hardcover_doesnt_have, test_kind_and_edition_rules, test_plan_book, test_engine_scan_apply_and_ebook_switch,
+def test_books_you_have_read_keep_your_hardcover_edition():
+    from heliograph.config import Config
+    from heliograph.engine import Engine
+    from heliograph.hardcover import Book
+    from heliograph.state import State
+    look = Look()
+    # planner: Dune is in your Hardcover library with the print edition 11; you own the ebook in BookOrbit
+    p = bo.plan_book(book(1, "Dune", ["Frank Herbert"], ["epub"]), look, library={"dune": 11, "1": 11})
+    assert p["changes"] == {"hardcoverId": "dune", "hardcoverEditionId": "11"} and "you read" in p["why"][0]
+    p = bo.plan_book(book(1, "Dune", ["Frank Herbert"], ["epub"], hardcoverId="dune", hardcoverEditionId="11"), look,
+                     library={"dune": 11})
+    assert p["fix"] == "ok" and not p["changes"]
+    assert bo.plan_book(book(1, "Dune", ["Frank Herbert"], ["epub"]), look)["changes"]["hardcoverEditionId"] == "12"   # not read: ebook
+
+    class Client:
+        def __init__(self): self.lib, self.updates = [book(1, "Dune", ["Frank Herbert"], ["epub"], hardcoverId="dune",
+                                                           hardcoverEditionId="12")], []
+        def books(self): return [dict(b) for b in self.lib]
+        def update(self, i, f): self.updates.append((i, dict(f))); self.lib[0].update(f)
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        hc = NoLib()
+        eng = Engine(Config(os.path.join(tmp, "c.json")), [], State(os.path.join(tmp, "s.db")), logging.getLogger("t"), hardcover=hc)
+        client = Client()
+        eng.bookorbit = lambda: client
+        orig = bo.HardcoverLookup
+        bo.HardcoverLookup = lambda h: Look()
+        try:
+            eng.start_bookorbit_scan()
+            while eng.bo_job["running"]: time.sleep(0.05)
+            assert eng.bo_job["items"][0]["fix"] == "right"                 # not in your library: the ebook is right
+            hc.lib = [Book(9, "Dune", status="read", book_id=1, edition_id=11, slug="dune")]   # ...then you read it in print
+            eng.start_bookorbit_scan()                                       # checked before, but the edition differs now
+            while eng.bo_job["running"]: time.sleep(0.05)
+            item = eng.bo_job["items"][0]
+            assert item["fix"] == "edition" and item["changes"] == {"hardcoverEditionId": "11"}, item
+        finally:
+            bo.HardcoverLookup = orig
+
+
+ALL = [test_books_you_have_read_keep_your_hardcover_edition, test_ratings_and_reviews_from_hardcover, test_set_aside_a_book_hardcover_doesnt_have, test_kind_and_edition_rules, test_plan_book, test_engine_scan_apply_and_ebook_switch,
        test_scan_pauses_at_hardcovers_daily_limit, test_parse_ref, test_find_on_hardcover_and_paste,
        test_apply_uses_a_ticked_suggestion_and_hardcover_url]
 

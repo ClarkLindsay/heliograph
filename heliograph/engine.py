@@ -715,6 +715,7 @@ class Engine:
             job["total"] = len(books)
             look, seen, items = bookorbit.HardcoverLookup(self.hc()), self._bo_seen(), []
             job["items"] = items                         # the page sees the list grow as the scan goes
+            library = self._bo_library()
             aside = self._bo_aside()
 
             def right(b):                                # already right: listed under Done, from BookOrbit's own data
@@ -734,13 +735,13 @@ class Engine:
                                   "result": "", "pick": False, "isbn13": b.get("isbn13"), "isbn10": b.get("isbn10"),
                                   "source": {k: b.get(k) for k in ("files", "hardcoverId", "hardcoverEditionId", "language")}})
                     job["items"] = items
-                elif not full and seen.get(str(b["id"])) == sig:
+                elif not full and seen.get(str(b["id"])) == sig and not self._bo_reads_differ(b, library):
                     job["skipped"] += 1
                     right(b)
                 else:
                     job["message"] = f"Checking '{b.get('title')}' on Hardcover…"
                     try:
-                        p = bookorbit.plan_book(b, look, self.matcher)
+                        p = bookorbit.plan_book(b, look, self.matcher, library)
                     except HardcoverDailyLimit:
                         raise
                     except Exception as e:
@@ -837,6 +838,25 @@ class Engine:
         except Exception as e:
             self.log.debug("BookOrbit: couldn't save the list: %s", e)
 
+    def _bo_library(self):
+        """{Hardcover slug or book id: the edition in your Hardcover library}: a book you've read keeps that edition
+        in BookOrbit. A few Hardcover requests (the library comes in pages of 100)."""
+        lib = {}
+        for b in self.hc().fetch_library():
+            if b.edition_id:
+                if b.slug:
+                    lib[b.slug] = b.edition_id
+                if b.book_id:
+                    lib[str(b.book_id)] = b.edition_id
+        self._bo_lib = lib
+        return lib
+
+    def _bo_reads_differ(self, bo, library):
+        """A book checked before whose BookOrbit edition isn't your Hardcover library's: check it again."""
+        mine = library.get(str(bo.get("hardcoverId") or "")) if bo.get("hardcoverId") else None
+        return bool(mine) and str(mine) != str(bo.get("hardcoverEditionId") or "") and \
+            "hardcoverEditionId" not in (bo.get("lockedFields") or [])
+
     def _bo_aside(self):
         try:
             return json.loads(self.state.get("bookorbit_aside") or "{}")
@@ -887,6 +907,15 @@ class Engine:
         return p
 
     def _bo_edition_for(self, p, look, book):
+        lib = getattr(self, "_bo_lib", None)
+        if lib is None:
+            try:
+                lib = self._bo_library()
+            except Exception:
+                lib = {}
+        mine = bookorbit.library_edition(lib, book)
+        if mine:
+            return {"id": mine, "edition_format": "your Hardcover library's edition", "format": None}
         ed = bookorbit.pick_edition(look.editions(book["id"]), p["kind"], [i for i in (p.get("isbn13"), p.get("isbn10")) if i])
         if not ed:
             raise ValueError(f"Hardcover has no English edition of “{book['title']}”: paste the edition's URL to use it anyway")
@@ -1085,13 +1114,15 @@ class Engine:
         seen, n = self._bo_seen(), 0
         try:
             client = self.bookorbit()
-            look = None
+            look, lib = None, None
             for b in client.books():
                 was = (seen.get(str(b["id"])) or "").split("|")[0]
                 if was != "audio" or bookorbit.kind(b) != "ebook" or not b.get("hardcoverId"):
                     continue
                 look = look or bookorbit.HardcoverLookup(self.hc())
-                p = bookorbit.plan_book(b, look, self.matcher)
+                if lib is None:
+                    lib = self._bo_library()
+                p = bookorbit.plan_book(b, look, self.matcher, lib)
                 edit = {k: v for k, v in p["changes"].items() if k in ("hardcoverEditionId", "language")}
                 if "hardcoverEditionId" in edit and "hardcoverId" not in p["changes"]:
                     client.update(b["id"], edit)
