@@ -76,6 +76,22 @@ def test_failed_update_is_retried_even_outside_the_window():
         assert eng.state.get("last_poll") != before            # clean cycle moves it on
 
 
+def test_failure_warning_only_when_something_failed():
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        hc, p, eng = make(tmp)
+        hc.lib[1] = Book(1, "A", status="reading", pages=5, total_pages=100)
+        warned = []
+        eng.log.warning = lambda msg, *a, **k: warned.append(msg)
+        for reviews in (False, True):                          # with review syncing off or on
+            eng.config["common"]["sync_reviews"] = reviews
+            eng.run_once(); eng.run_once()
+        assert not [m for m in warned if "Some updates failed" in m]
+        hc.lib[1].status = "read"; p.fail = AuthError("cookie dead")
+        eng.run_once()
+        assert [m for m in warned if "Some updates failed" in m]
+        del eng.log.warning
+
+
 def test_per_book_error_does_not_block_others_and_holds_window():
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         hc, p, eng = make(tmp, "import_all")
@@ -381,7 +397,7 @@ def test_parse_audiobook():
 
 
 if __name__ == "__main__":
-    for t in (test_reviews, test_audiobook_progress_is_sent_as_percent, test_parse_audiobook, test_flow, test_failed_update_is_retried_even_outside_the_window, test_per_book_error_does_not_block_others_and_holds_window,
+    for t in (test_reviews, test_audiobook_progress_is_sent_as_percent, test_parse_audiobook, test_flow, test_failed_update_is_retried_even_outside_the_window, test_failure_warning_only_when_something_failed, test_per_book_error_does_not_block_others_and_holds_window,
               test_steps_and_throttle, test_import_all_and_want_filter, test_new_service_gets_own_baseline,
               test_dry_run_changes_nothing, test_link_is_remembered_and_unmatched_is_throttled, test_status_only_provider_gets_no_progress, test_stuck_service_does_not_block_the_others,
               test_editions_check_and_fix, test_books_removed_from_hardcover, test_profile_links_are_refreshed_weekly, test_parse):

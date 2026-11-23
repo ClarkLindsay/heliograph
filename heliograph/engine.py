@@ -180,7 +180,7 @@ class Engine(BookOrbitJobs):
                 self.state.set("last_poll", (started - timedelta(minutes=10)).isoformat())
             if clean and self.common.get("sync_reviews"):
                 self.state.set("reviews_caught_up", "1")
-            else:
+            if not clean:
                 self.log.warning("Some updates failed; keeping the Hardcover window open so they are retried")
             if self.heartbeat:
                 self.heartbeat.write_text(str(time.time()))
