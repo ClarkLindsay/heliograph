@@ -202,7 +202,7 @@ function bookorbitTab(){const m=$('#main'),tok=tabToken;
    if(!keys.length||!confirm(`Update ${keys.length} book(s) in BookOrbit?`))return;
    try{await api('/api/bookorbit/apply',{keys});setTimeout(()=>tok===tabToken&&poll(),300)}catch(e){note(d.out,e.message,'bad')}}},'Apply');
  const group=i=>isDone(i)?'done':i.fix;                    // linked or applied: out of its group, into Done
- const vis=()=>d.filter?d.items.filter(i=>group(i)===d.filter):d.items;
+ const vis=()=>d.items.filter(d.filter?i=>group(i)===d.filter:i=>i.fix!=='right');   // books already right: only under Done
  function syncSel(){                                          // checkboxes + the Apply count, nothing else
   for(const [k,r] of d.rows)if(r.cb)r.cb.checked=d.sel.has(k);
   const n=d.items.filter(i=>d.sel.has(i.key)&&canApply(i)).length,show=d.items.length&&!d.running;

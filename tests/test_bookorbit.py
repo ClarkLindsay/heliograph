@@ -96,7 +96,8 @@ def test_engine_scan_apply_and_ebook_switch():
                 if not eng.bo_job["running"]: break
                 time.sleep(0.05)
             j = eng.bo_job
-            assert [i["title"] for i in j["items"]] == ["Dune"] and j["items"][0]["pick"], j["message"]   # the Hobbit is right
+            assert [(i["title"], i["fix"]) for i in j["items"]] == [("Dune", "link"), ("The Hobbit", "right")], j["message"]
+            assert j["items"][0]["pick"] and j["items"][1]["result"] == "✓ already right"            # the Hobbit is listed as done
             eng.apply_bookorbit([j["items"][0]["key"]])
             for _ in range(100):
                 if not eng.bo_job["running"]: break
@@ -105,7 +106,8 @@ def test_engine_scan_apply_and_ebook_switch():
             # a second scan skips both: nothing changed
             eng.start_bookorbit_scan()
             while eng.bo_job["running"]: time.sleep(0.05)
-            assert eng.bo_job["skipped"] == 2 and not eng.bo_job["items"]
+            assert eng.bo_job["skipped"] == 2 and {i["fix"] for i in eng.bo_job["items"]} == {"right"}, (eng.bo_job["skipped"], eng.bo_job["items"], eng.bo_job["message"])
+            assert eng.bo_job["message"].startswith("All 2 books have the right")
             # you add an ebook to Dune: the next check moves it to the ebook edition on its own
             client.lib[0]["files"].append({"format": "epub", "role": "primary"})
             assert eng.bookorbit_ebooks(force=True) == 1

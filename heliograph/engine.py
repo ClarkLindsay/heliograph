@@ -658,7 +658,18 @@ class Engine:
             books = client.books()
             job["total"] = len(books)
             look, seen, items = bookorbit.HardcoverLookup(self.hc()), self._bo_seen(), []
+            job["items"] = items                         # the page sees the list grow as the scan goes
             aside = self._bo_aside()
+
+            def right(b):                                # already right: listed under Done, from BookOrbit's own data
+                hid, eid = b.get("hardcoverId"), b.get("hardcoverEditionId")
+                items.append({"id": b["id"], "key": str(b["id"]), "title": b.get("title") or "", "authors": b.get("authors") or [],
+                              "kind": bookorbit.kind(b), "changes": {}, "problem": None, "fix": "right", "pick": False,
+                              "result": "✓ already right", "why": [f"Hardcover “{hid}”" + (f", edition {eid}" if eid else "")],
+                              "book": {"id": hid, "slug": hid, "title": ""}, "edition": {"id": eid} if eid else None,
+                              "isbn13": b.get("isbn13"), "isbn10": b.get("isbn10"),
+                              "source": {k: b.get(k) for k in ("files", "hardcoverId", "hardcoverEditionId", "language")}})
+
             for b in books:
                 sig = bookorbit.signature(b)
                 if str(b["id"]) in aside:                # you set it aside (not on Hardcover): listed, never looked up
@@ -669,6 +680,7 @@ class Engine:
                     job["items"] = items
                 elif not full and seen.get(str(b["id"])) == sig:
                     job["skipped"] += 1
+                    right(b)
                 else:
                     job["message"] = f"Checking '{b.get('title')}' on Hardcover…"
                     try:
@@ -682,6 +694,7 @@ class Engine:
                              "why": [], "fix": "error", "problem": f"couldn't check: {str(e)[:150]}"}
                     if p["fix"] == "ok" and not p.get("problem"):
                         seen[str(b["id"])] = sig
+                        right(b)
                     else:
                         p.update(key=str(b["id"]), result="", pick=bool(p["changes"]))
                         items.append(p)
@@ -691,12 +704,14 @@ class Engine:
             for p in items:
                 counts[p["fix"]] = counts.get(p["fix"], 0) + 1
             job["counts"] = counts
-            fixable = sum(1 for p in items if p["changes"])
-            aside_n = sum(1 for p in items if p["fix"] == "aside")
-            look_n = len(items) - fixable - aside_n
+            work = [p for p in items if p["fix"] != "right"]
+            fixable = sum(1 for p in work if p["changes"])
+            aside_n = sum(1 for p in work if p["fix"] == "aside")
+            look_n = len(work) - fixable - aside_n
+            right_n = counts.get("right", 0)
             job["message"] = (f"{len(books)} books: {fixable} to fix" + (f", {look_n} to look at" if look_n else "")
                               + (f", {aside_n} set aside" if aside_n else "")
-                              + (f", {job['skipped']} already right" if job["skipped"] else "")) if items else \
+                              + (f", {right_n} already right" if right_n else "")) if work else \
                 f"All {len(books)} books have the right Hardcover book, edition and language"
             self.log.info("BookOrbit: %s", job["message"])
         except HardcoverDailyLimit as e:
