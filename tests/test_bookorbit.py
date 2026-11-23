@@ -146,7 +146,7 @@ def test_scan_pauses_at_hardcovers_daily_limit():
             while eng.bo_job["running"]: time.sleep(0.05)
             j = eng.bo_job
             assert j["message"].startswith("Paused after 1 of 2 books") and "resets in 3h 2m" in j["message"], j["message"]
-            assert not j["items"]                                           # the Hobbit wasn't marked as an error
+            assert [i["fix"] for i in j["items"]] == ["right"]                # Dune is done; the Hobbit wasn't marked as an error
             assert "1" in eng._bo_seen() and "2" not in eng._bo_seen()       # Dune is kept: the next scan skips it
         finally:
             bo.HardcoverLookup = orig
