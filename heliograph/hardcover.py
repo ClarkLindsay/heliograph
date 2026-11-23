@@ -12,7 +12,7 @@ AUDIO_FORMAT = 2       # editions.reading_format_id: 1 Read, 2 Listened, 4 Ebook
 FORMAT_NAMES = {1: "Print", 2: "Audiobook", 3: "Print", 4: "Ebook"}
 
 UB_FIELDS = """
-  id book_id edition_id status_id rating updated_at
+  id book_id edition_id status_id rating updated_at review_raw review_has_spoilers
   book { id title pages contributions { contribution author { name } } }
   edition { reading_format_id audio_seconds }
   user_book_reads(order_by: {id: desc}, limit: 1) { id progress_pages progress_seconds started_at finished_at }
@@ -51,6 +51,8 @@ class Book:
     audio: bool = False                 # your Hardcover edition is an audiobook ("Listened")
     seconds: Optional[int] = None       # audiobook progress: time listened
     total_seconds: Optional[int] = None # audiobook length
+    review: Optional[str] = None        # your Hardcover review, as plain text
+    review_spoilers: bool = False
     hydrated: bool = False
 
     @property
@@ -90,6 +92,7 @@ def book_from_ub(ub: dict) -> Book:
         finished_on=done.get("finished_at") or None, started_on=done.get("started_at") or None,
         audio=(ub.get("edition") or {}).get("reading_format_id") == AUDIO_FORMAT,
         seconds=read.get("progress_seconds"), total_seconds=(ub.get("edition") or {}).get("audio_seconds") or None,
+        review=(ub.get("review_raw") or "").strip() or None, review_spoilers=bool(ub.get("review_has_spoilers")),
     )
 
 
@@ -151,6 +154,9 @@ class HardcoverClient:
 
     def fetch_library(self):
         return self._books({"user_id": {"_eq": self.user_id}})
+
+    def fetch_reviewed(self):
+        return self._books({"user_id": {"_eq": self.user_id}, "has_review": {"_eq": True}})
 
     def fetch_reading(self):
         return self._books({"user_id": {"_eq": self.user_id}, "status_id": {"_eq": 2}})

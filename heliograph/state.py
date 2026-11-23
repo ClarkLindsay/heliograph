@@ -6,9 +6,9 @@ from .hardcover import Book
 class State:
     """What we last pushed to each service per Hardcover user_book, plus a local copy of the library for the web UI."""
     LINK_COLS = ("remote_id", "remote_pages", "status", "pages", "rating", "pushed_at", "link_failed_at",
-                 "manual", "skip", "error", "error_at", "suggest")
+                 "manual", "skip", "error", "error_at", "suggest", "review")
     DEFAULT = dict(remote_id=None, remote_pages=None, status=None, pages=None, rating=None, pushed_at=0,
-                   link_failed_at=0, manual=0, skip=0, error=None, error_at=0, suggest=None)
+                   link_failed_at=0, manual=0, skip=0, error=None, error_at=0, suggest=None, review=None)
 
     def __init__(self, path):
         Path(path).parent.mkdir(parents=True, exist_ok=True)
@@ -27,7 +27,8 @@ class State:
             audio integer default 0, seconds integer, total_seconds integer);""")
         have = {r[1] for r in self.db.execute("pragma table_info(links)")}      # upgrade databases from older versions
         for name, ddl in (("manual", "integer default 0"), ("skip", "integer default 0"),
-                          ("error", "text"), ("error_at", "real default 0"), ("suggest", "text")):
+                          ("error", "text"), ("error_at", "real default 0"), ("suggest", "text"),
+                          ("review", "text")):
             if name not in have:
                 self.db.execute(f"alter table links add column {name} {ddl}")
         have = {r[1] for r in self.db.execute("pragma table_info(books)")}

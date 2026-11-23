@@ -62,6 +62,8 @@ DEFAULTS = {
         "sync_want_to_read": True,
         "sync_paused_dnf": False,
         "sync_ratings": True,
+        "sync_reviews": False,               # send your Hardcover reviews to the services
+        "overwrite_reviews": False,          # ...even over a review you wrote there yourself
         "initial_sync": "baseline",          # baseline = record library, push only later changes | import_all
         "verbose_logging": False,
     },

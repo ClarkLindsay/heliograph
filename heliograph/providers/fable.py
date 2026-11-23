@@ -237,6 +237,31 @@ class Fable(Provider):
         if code not in (200, 201):
             raise ProviderError(f"Fable progress -> HTTP {code}")
 
+    supports_reviews = True
+
+    def _my_review(self, remote_id):
+        code, ex = self._req(f"/api/users/{self._uid()}/reviews/{remote_id}")
+        if code not in (200, 404):
+            raise ProviderError(f"Fable: couldn't load existing review (HTTP {code})")
+        return ex if code == 200 and isinstance(ex, dict) else {}
+
+    def get_review(self, remote_id, book):
+        return self._my_review(remote_id).get("review") or None
+
+    def set_review(self, remote_id, text, spoilers, book):
+        ex = self._my_review(remote_id)
+        rating = ex.get("rating") or getattr(book, "rating", None)
+        if not rating:
+            raise ProviderError("Fable only takes a review with a star rating: rate the book on Hardcover")
+        body = {"rating": float(rating), "labels": ex.get("labels") or [], "review": text,
+                "contains_spoilers": bool(spoilers), "did_not_finish": bool(ex.get("did_not_finish"))}
+        if ex.get("id"):
+            code, _ = self._req(f"/api/books/{remote_id}/reviews/{ex['id']}", "PATCH", body)
+        else:
+            code, _ = self._req(f"/api/books/{remote_id}/reviews", "POST", body)
+        if not (code and 200 <= code < 300):
+            raise ProviderError(f"Fable review -> HTTP {code}")
+
     def set_rating(self, remote_id, rating, book):
         code, ex = self._req(f"/api/users/{self._uid()}/reviews/{remote_id}")
         if code not in (200, 404):

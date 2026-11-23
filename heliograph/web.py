@@ -79,6 +79,8 @@ SPEC = {
         ("sync_want_to_read", "Sync Want to Read", "bool"),
         ("sync_paused_dnf", "Sync Paused / Did Not Finish", "bool"),
         ("sync_ratings", "Sync ratings when marked Read", "bool"),
+        ("sync_reviews", "Sync reviews: your Hardcover review goes to Goodreads, StoryGraph, Fable and Pagebound", "bool"),
+        ("overwrite_reviews", "…even replacing a different review you wrote on a service yourself (off: that one is left alone)", "bool"),
         ("remove_from_services", "When you remove a book from Hardcover, also remove it from your services "
                                  "(off / want = only Want to Read books / all = any status, deletes ratings and reviews there too)",
          "choice:off,want,all"),

@@ -754,6 +754,44 @@ class Goodreads(Provider):
                    params={"no_lightbox": "true", "queue": "false", "stars_click": "true",
                            "rating": f"{stars:g}", "ref": "undefined"})
 
+    # ---- review text (the review editor's save action, everything else sent back unchanged)
+    supports_reviews = True
+
+    def _review_editor(self, book_id):
+        edit_url = f"{BASE}/review/edit/{book_id}"
+        r = self._req("GET", edit_url)
+        if r.status_code != 200:
+            raise ProviderError(f"review editor HTTP {r.status_code}")
+        state = parse_review_state(r.text)
+        if not state:
+            raise ProviderError("couldn't read the Goodreads review editor state")
+        return edit_url, r.text, state
+
+    def get_review(self, remote_id, book):
+        return self._review_editor(remote_id)[2]["review_text"] or None
+
+    def set_review(self, remote_id, text, spoilers, book):
+        edit_url, html, state = self._review_editor(remote_id)
+        action = self._action_id(html, edit_url)
+        if not action:
+            raise ProviderError("couldn't identify Goodreads' review-save action")
+        payload = {"bookId": state["book_id"], "reviewText": text, "spoilerStatus": bool(spoilers),
+                   "isOwnedEdition": state["is_owned_edition"], "privateNotes": state["private_notes"],
+                   "postToBlog": state["post_to_blog"], "addToUpdateFeed": state["add_to_feed"],
+                   "readingSessions": state["reading_sessions"], "initialReadingSessions": state["reading_sessions"]}
+        tree = ('["",{"children":["review",{"children":["edit",{"children":[["id","%s","d"],'
+                '{"children":["__PAGE__",{},null,null]},null,null]}]},null,null]},null,null,true]' % remote_id)
+        resp = self._req("POST", edit_url, data=json.dumps([payload, "/review/edit/[id]"], separators=(",", ":")).encode(),
+                         headers={"Accept": "text/x-component", "Content-Type": "text/plain;charset=UTF-8",
+                                  "Next-Action": action, "Next-Router-State-Tree": quote(tree, safe=""),
+                                  "Referer": edit_url, "Origin": BASE, "Sec-Fetch-Site": "same-origin",
+                                  "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty"})
+        if resp.status_code != 200 or not next_action_ok(resp.text):
+            raise ProviderError(f"Goodreads didn't confirm the review (HTTP {resp.status_code})")
+        after = self.get_review(remote_id, book) or ""
+        if " ".join(after.split())[:60] != " ".join(text.split())[:60]:
+            raise ProviderError("Goodreads didn't keep the review")
+
     # ---- date read (Next.js server action)
     def _action_id(self, html, referer):
         paths = chunk_paths(html)

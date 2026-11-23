@@ -144,6 +144,10 @@ class Provider:
     def set_progress(self, remote_id, book, by_pages, remote_pages): raise NotImplementedError
     def set_rating(self, remote_id, rating, book): raise NotImplementedError
 
+    supports_reviews = False
+    def get_review(self, remote_id, book): return None                  # -> your review text there, or None
+    def set_review(self, remote_id, text, spoilers, book): raise NotImplementedError
+
     def finalize(self, cand):
         """Hook after a candidate is chosen (e.g. StoryGraph edition resolution). -> Match | None"""
         return Match(cand["id"], cand.get("pages"))

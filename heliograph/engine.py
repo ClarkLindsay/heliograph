@@ -1,4 +1,4 @@
-import csv, io, json, logging, threading, time
+import csv, hashlib, io, json, logging, re, threading, time
 from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
@@ -6,6 +6,16 @@ from . import bookorbit, dates, smartmatch
 from .config import APP_DIR
 from .hardcover import HardcoverClient, HardcoverDailyLimit
 from .providers.base import AuthError, is_audio
+
+
+def review_norm(text):
+    """Review text as compared across services: tags and entities gone, quotes straightened, whitespace collapsed."""
+    t = re.sub(r"<br\s*/?>|</p>|</div>", "\n", str(text or ""), flags=re.I)
+    t = re.sub(r"<[^>]+>", "", t)
+    t = (t.replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+          .replace("&quot;", '"').replace("&#39;", "'"))
+    t = t.translate(str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"', "\u2026": "..."}))
+    return " ".join(t.split())
 
 RELINK_AFTER = 6 * 3600          # retry an unmatched book every 6h
 IMPORT_RETRY_DELAYS = (10, 30)   # a failed book/service is retried after these many seconds...
@@ -134,6 +144,10 @@ class Engine:
             seen = {b.ub_id: b for b in hc.fetch_updated_since(last_poll)}
             for b in hc.fetch_reading():          # progress edits may not bump user_books.updated_at
                 seen[b.ub_id] = b
+            catch_up = self.common.get("sync_reviews") and self.state.get("reviews_caught_up") != "1"
+            if catch_up:                          # reviews written before review syncing was turned on
+                for b in hc.fetch_reviewed():
+                    seen.setdefault(b.ub_id, b)
             books = list(seen.values())
         base = self.common["initial_sync"] == "baseline"
         self.log.info("Hardcover: %d book(s) to examine%s", len(books),
@@ -165,6 +179,8 @@ class Engine:
             held_too_long = bool(last_poll) and (started - datetime.fromisoformat(last_poll)).total_seconds() > MAX_CURSOR_HOLD
             if clean or held_too_long or not last_poll:
                 self.state.set("last_poll", (started - timedelta(minutes=10)).isoformat())
+            if clean and self.common.get("sync_reviews"):
+                self.state.set("reviews_caught_up", "1")
             else:
                 self.log.warning("Some updates failed; keeping the Hardcover window open so they are retried")
             if self.heartbeat:
@@ -202,20 +218,30 @@ class Engine:
         if not (self.dry if dry is None else dry):
             self.state.save_link(b.ub_id, p.key, error=(str(error)[:300] if error else None), error_at=now if error else 0)
 
+    @staticmethod
+    def review_sig(b):
+        """Which review (text + spoiler flag) was sent: links remember it so a review only goes out when it changes."""
+        if not b.review:
+            return None
+        return hashlib.sha1((review_norm(b.review) + ("|spoilers" if b.review_spoilers else "")).encode()).hexdigest()[:16]
+
     def _sync(self, b, p, baseline, failed, dry=None, st=None, outcome=None, flag=False):
         dry = self.dry if dry is None else dry
         now, c = time.time(), self.common
         st = st if st is not None else self.state.link(b.ub_id, p.key)
+        rsig = self.review_sig(b) if c.get("sync_reviews") and p.supports_reviews else None
         if baseline:
             if not dry:
-                self.state.save_link(b.ub_id, p.key, status=b.status, pages=b.position, rating=b.rating, pushed_at=now)
+                self.state.save_link(b.ub_id, p.key, status=b.status, pages=b.position, rating=b.rating, pushed_at=now,
+                                     **({"review": rsig} if rsig else {}))
             return 0
         if st["skip"] or not b.status or not self._allowed(p, b.status):
             return 0
         status_changed = st["status"] != b.status
         progress_changed = p.tracks_progress and self._progress_due(b, st, status_changed, now)
         rating_changed = bool(c["sync_ratings"] and b.status == "read" and b.rating and b.rating != st["rating"])
-        if not (status_changed or progress_changed or rating_changed):
+        review_changed = bool(rsig and st.get("review") not in (rsig, "kept:" + rsig))
+        if not (status_changed or progress_changed or rating_changed or review_changed):
             self.log.debug("%s: '%s' unchanged (Hardcover: %s p.%s/%s, last synced: %s p.%s)", p.label, b.title,
                            b.status, b.position, b.total_pages or "?", st["status"], st["pages"])
             return 0
@@ -249,6 +275,8 @@ class Engine:
                 if not dry:
                     p.set_rating(rid, b.rating, b)
                 done += 1; upd["rating"] = b.rating
+            if review_changed:
+                done += self._sync_review(b, p, rid, st, rsig, upd, dry, tag)
             if b.status == "read":
                 upd["pages"] = b.position
             if done:
@@ -270,6 +298,28 @@ class Engine:
             self.log.error("%s: failed to sync '%s': %s", p.label, b.title, e, exc_info=self.common["verbose_logging"])
             self._note(b, p, e, now, dry)
         return 0
+
+    def _sync_review(self, b, p, rid, st, rsig, upd, dry, tag):
+        """Send your Hardcover review, unless the service already has it, or has a different review of yours that
+        Heliograph didn't write (left alone unless you allow overwriting). Never deletes a review."""
+        if dry:
+            self.log.info("%s%s: '%s' review (%d characters)", tag, p.label, b.title, len(b.review))
+            return 1
+        theirs = p.get_review(rid, b)
+        if theirs and review_norm(theirs) == review_norm(b.review):
+            upd["review"] = rsig                         # already there (e.g. imported from Goodreads long ago)
+            return 0
+        ours_before = st.get("review") and not str(st["review"]).startswith("kept:")
+        if theirs and not ours_before and not self.common.get("overwrite_reviews"):
+            self.log.info("%s: '%s' has a different review there that Heliograph didn't write: left alone "
+                          "(Settings → overwrite reviews to replace it)", p.label, b.title)
+            upd["review"] = "kept:" + rsig
+            return 0
+        p.set_review(rid, b.review, b.review_spoilers, b)
+        self.log.info("%s: '%s' review sent (%d characters%s)", p.label, b.title, len(b.review),
+                      ", spoilers" if b.review_spoilers else "")
+        upd["review"] = rsig
+        return 1
 
     # ---- smart matching: what it has learned from you
     def _learned_weights(self):

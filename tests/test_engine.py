@@ -15,6 +15,7 @@ class FakeHC:
     def fetch_reading(self): return [b for b in self.lib.values() if b.status == "reading"]
     def hydrate(self, b): b.hydrated = True
     def fetch_one(self, ub_id): return self.lib.get(ub_id)
+    def fetch_reviewed(self): return [b for b in self.lib.values() if b.review]
 
 
 class Fake(Provider):
@@ -296,6 +297,53 @@ def test_profile_links_are_refreshed_weekly():
         eng.refresh_profile_links(force=True); assert p.home_url().endswith("/user/show/9")              # failure keeps it
 
 
+def test_reviews():
+    class Reviews(Fake):
+        supports_reviews = True
+        def __init__(self, cfg, log): super().__init__(cfg, log); self.there = {}
+        def get_review(self, r, b): return self.there.get(r)
+        def set_review(self, r, text, sp, b): self._maybe(); self.there[r] = text; self.calls.append(("review", r, text, sp))
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        cfg = Config(os.path.join(tmp, "c.json"))
+        cfg["goodreads"]["enabled"] = True
+        cfg["common"].update(initial_sync="baseline", min_update_interval_seconds=0)
+        hc, log = FakeHC(), logging.getLogger("t")
+        p = Reviews(cfg, log)
+        eng = Engine(cfg, [p], State(os.path.join(tmp, "s.db")), log, hardcover=hc)
+        hc.lib[1] = Book(1, "Read", status="read", rating=4.0, review="Loved it.")
+        hc.lib[2] = Book(2, "Theirs", status="read", rating=3.0, review="Hardcover words")
+        hc.lib[3] = Book(3, "Same", status="read", rating=5.0, review="It\u2019s  great")
+        eng.run_once()                                        # baseline: reviews off, nothing sent
+        assert p.calls == []
+        cfg["common"]["sync_reviews"] = True
+        p.there = {"R2": "My own Goodreads review", "R3": "It's great"}
+        for i in (1, 2, 3):
+            eng.state.save_link(i, "goodreads", remote_id=f"R{i}")
+        eng.run_once()                                        # the catch-up pass picks up reviews written earlier
+        assert p.calls == [("review", "R1", "Loved it.", False)], p.calls
+        assert eng.state.link(2, "goodreads")["review"].startswith("kept:")    # your own review there: left alone
+        assert eng.state.link(3, "goodreads")["review"] == eng.review_sig(hc.lib[3])   # already there: nothing sent
+        assert eng.state.get("reviews_caught_up") == "1"
+        p.calls.clear(); eng.run_once()
+        assert p.calls == []                                  # nothing changed: nothing sent, nothing re-checked
+        hc.lib[1].review, hc.lib[1].review_spoilers = "Loved it. Edited.", True
+        eng.run_once()
+        assert p.calls == [("review", "R1", "Loved it. Edited.", True)]
+        p.calls.clear()
+        hc.lib[2].review = "Hardcover words, edited"          # a review you kept: still kept after an edit on Hardcover
+        eng.run_once()
+        assert p.calls == []
+        cfg["common"]["overwrite_reviews"] = True
+        hc.lib[2].review = "Hardcover words, edited again"
+        eng.run_once()
+        assert p.calls == [("review", "R2", "Hardcover words, edited again", False)]
+        p.calls.clear()
+        hc.lib[1].review = None                               # deleting a review on Hardcover never deletes it there
+        eng.run_once()
+        assert p.calls == [] and p.there["R1"] == "Loved it. Edited."
+
+
 def test_parse():
     ub = {"id": 9, "book_id": 4, "edition_id": 7, "status_id": 2, "rating": None,
           "book": {"title": "T", "pages": 300, "contributions": [
@@ -333,7 +381,7 @@ def test_parse_audiobook():
 
 
 if __name__ == "__main__":
-    for t in (test_audiobook_progress_is_sent_as_percent, test_parse_audiobook, test_flow, test_failed_update_is_retried_even_outside_the_window, test_per_book_error_does_not_block_others_and_holds_window,
+    for t in (test_reviews, test_audiobook_progress_is_sent_as_percent, test_parse_audiobook, test_flow, test_failed_update_is_retried_even_outside_the_window, test_per_book_error_does_not_block_others_and_holds_window,
               test_steps_and_throttle, test_import_all_and_want_filter, test_new_service_gets_own_baseline,
               test_dry_run_changes_nothing, test_link_is_remembered_and_unmatched_is_throttled, test_status_only_provider_gets_no_progress, test_stuck_service_does_not_block_the_others,
               test_editions_check_and_fix, test_books_removed_from_hardcover, test_profile_links_are_refreshed_weekly, test_parse):

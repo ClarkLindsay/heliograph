@@ -53,6 +53,13 @@ def parse_forms(html):
     p = _Forms(); p.feed(html); return p.forms
 
 
+def trix_html(text):
+    """Plain text as StoryGraph's rich-text box stores it: a <div> per paragraph, <br> for single line breaks."""
+    from html import escape
+    paras = [p for p in re.split(r"\n\s*\n", str(text or "").strip()) if p.strip()]
+    return "".join("<div>" + "<br>".join(escape(line) for line in p.strip().split("\n")) + "</div>" for p in paras)
+
+
 def star_fields(rating):
     total = int(float(rating) * 100 + 0.5)
     whole, dec = divmod(total, 100)
@@ -430,6 +437,49 @@ class StoryGraph(Provider):
             "on_book_page": "true", "authenticity_token": info["csrf"]})
         if not (200 <= r.status_code < 300 or r.status_code == 302):
             raise ProviderError(f"StoryGraph progress update -> HTTP {r.status_code}")
+
+    supports_reviews = True
+
+    def _review_form(self, remote_id):
+        href = self._page(remote_id)["review_href"]
+        if href and "/new" not in href and not href.endswith("/edit"):
+            href += "/edit"
+        form_url = urljoin(BASE, href or f"/reviews/new?book_id={remote_id}")
+        page = self._req("GET", form_url)
+        forms = [f for f in parse_forms(page.text) if "/reviews" in f["action"]] or \
+                [f for f in parse_forms(page.text) if any(n.startswith("review[") for n, _ in f["fields"])]
+        if not forms:
+            raise ProviderError("StoryGraph: review form not found (page layout changed?)")
+        return form_url, page, forms[0], bool(href and "/new" not in href)
+
+    def get_review(self, remote_id, book):
+        _u, _p, form, exists = self._review_form(remote_id)
+        if not exists:
+            return None
+        return next((v for n, v in form["fields"] if n == "review[explanation]"), None) or None
+
+    def set_review(self, remote_id, text, spoilers, book):
+        form_url, page, form, exists = self._review_form(remote_id)
+        fields = [(n, v) for n, v in form["fields"] if n != "review[explanation]"]
+        fields.append(("review[explanation]", trix_html(text)))
+        names = {n for n, _ in fields}
+        if not exists and book is not None and getattr(book, "rating", None) and not any(
+                n == "stars_integer" and v for n, v in fields):
+            whole, dec = star_fields(book.rating)
+            fields = [(n, v) for n, v in fields if n not in ("stars_integer", "stars_decimal")]
+            fields += [("stars_integer", whole), ("stars_decimal", dec)]
+        for k, v in (("review[book_id]", remote_id), ("return_to", f"/books/{remote_id}"), ("button", "")):
+            if k not in names:
+                fields.append((k, v))
+        csrf = next((v for n, v in fields if n == "authenticity_token"), None) or _csrf(page.text) or ""
+        if not any(n == "authenticity_token" for n, _ in fields):
+            fields.append(("authenticity_token", csrf))
+        r = self._req("POST", urljoin(form_url, form["action"] or "/reviews"), data=fields, headers={
+            "X-CSRF-Token": csrf, "Referer": form_url,
+            "Accept": "text/vnd.turbo-stream.html, text/html, application/xhtml+xml",
+            "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8"})
+        if r.status_code not in (200, 302, 303):
+            raise ProviderError(f"StoryGraph review -> HTTP {r.status_code}")
 
     def set_rating(self, remote_id, rating, book):
         """No standalone rating: load the review form, change only the stars, resubmit (plugin saveReview)."""

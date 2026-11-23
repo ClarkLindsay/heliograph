@@ -325,6 +325,31 @@ class Pagebound(Provider):
         if not (code and 200 <= code < 300):
             raise ProviderError(f"Pagebound rating -> HTTP {code}")
 
+    supports_reviews = True
+
+    def get_review(self, remote_id, book):
+        bid, _ = self._split(remote_id)
+        return (self._review(int(bid), getattr(book, "title", None)) or {}).get("review") or None
+
+    def set_review(self, remote_id, text, spoilers, book):
+        bid, _ = self._split(remote_id)
+        rv = self._review(int(bid), getattr(book, "title", None))
+        if rv:
+            code, _d = self._req(f"/api/v1/reviews/{rv['id']}", "PUT", {"review": {"review": text, "is_spoiler": bool(spoilers)}})
+        else:
+            existing, _pc = self._user_book(remote_id)
+            if not existing:
+                raise ProviderError("Pagebound: no reading-list entry for this book yet")
+            rating = getattr(book, "rating", None)
+            n = None
+            code, _d = self._req("/api/v1/reviews", "POST", {"review": {
+                "overall_rating": int(float(rating) * 2) / 2 if rating else None, "quality_rating": n,
+                "entertainment_rating": n, "plot_rating": n, "audiobook_rating": n, "character_rating": n,
+                "is_spoiler": bool(spoilers), "review": text, "emojis": [], "book_id": int(bid),
+                "user_book_id": int(existing["user_book_id"]), "is_dnf": False}})
+        if not (code and 200 <= code < 300):
+            raise ProviderError(f"Pagebound review -> HTTP {code}")
+
     def _review(self, book_id, title=None):
         """Your review of a book, or None. The book endpoints don't include it; the reading list does (search by
         title first, else every page)."""
