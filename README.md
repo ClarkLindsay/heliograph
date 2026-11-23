@@ -32,6 +32,7 @@ other services. All credit for working out how to talk to each service goes to t
 - [Config and storage](#config-and-storage)
 - [Goodreads cookie refresher](#goodreads-cookie-refresher)
 - [LibraryThing](#librarything)
+- [BookOrbit](#bookorbit)
 - [Behaviour notes](#behaviour-notes)
 - [Updating](#updating)
 - [Troubleshooting](#troubleshooting)
@@ -48,6 +49,7 @@ other services. All credit for working out how to talk to each service goes to t
 | Progress changes | Page (mapped to that service's edition page count) or %, throttled with step sizes. Audiobooks tracked by time are sent as % |
 | Marked Read | Read shelf, finish date (Goodreads/Pagebound), then your rating |
 | Rating changed later | Rating re-pushed |
+| Review written or edited | Review text and spoiler flag (Goodreads, StoryGraph, Fable, Pagebound). Off by default: **Sync reviews** (0.6.0+) |
 | Paused / DNF | Off by default (Goodreads/StoryGraph/Pagebound take both, Fable DNF only) |
 
 Ratings: Goodreads quarter stars, StoryGraph quarter stars (review form, other review fields untouched), Fable as-is,
@@ -57,6 +59,9 @@ Sync is **one way only**. Heliograph reads Hardcover through its official API an
 The exceptions are the optional data corrections on the **Hardcover** tab, which only write when you press **Apply**:
 **Reading dates from Goodreads** fills in start dates (and other date fixes you pick), and **Hardcover editions**
 changes a book's edition, for example from a translation you never read to the English edition.
+
+If you use [BookOrbit](#bookorbit), Heliograph also writes to BookOrbit: the Hardcover links and editions you apply on
+the **BookOrbit** tab, and (optionally) your Hardcover star ratings and reviews.
 
 By default the first run is a **baseline**: it records your current library and pushes nothing, so only *later* changes
 are sent. That's the safe choice if you've already imported your history into each service. Use the **Import** tab
@@ -251,6 +256,7 @@ Open **http://localhost:8080** (or [your port](#changing-the-web-ui-port)).
   - **Push current status now**: books recorded at the first run are assumed to be in sync, so push after linking.
   - **Unlink** and **Skip**.
 - **Push to all services** (top of a book): sends that book's current status, progress and rating to every enabled service.
+- **Hardcover ↗** (top of a book, 0.6.0+): opens the book on Hardcover at the edition your library uses.
 - **Cover previews:** the edition picker shows each candidate's cover next to your Hardcover cover.
 - **Import** tab: re-sends every Hardcover book (filter by status and service) in the background, one book at a
   time, with progress and Cancel.
@@ -291,6 +297,7 @@ Open **http://localhost:8080** (or [your port](#changing-the-web-ui-port)).
     Hardcover's dates changed since the scan. Dates Goodreads only has as a month or year are left out.
   - **Hardcover editions:** finds books whose Hardcover edition isn't in your preferred language and switches the ones
     you pick (moved here from the Import tab).
+- **BookOrbit** tab (0.6.0+): gets your BookOrbit library's Hardcover links right. See [BookOrbit](#bookorbit).
 - **Settings:** everything from the config, including the poll interval. Secrets are never shown: leave a field blank
   to keep its value, and **Clear** removes it. Settings set through `HELIOGRAPH__...` environment variables are shown
   locked. Changes apply on the next cycle.
@@ -488,7 +495,70 @@ LibraryThing has no reading status or progress: a "status" is which collection a
 - Sign in with `username` + `password` (renewed automatically), or paste the three session cookies.
 - If Cloudflare challenges the requests, you'll see an error. Retry later, or set `user_agent`.
 
+## BookOrbit
+
+[BookOrbit](https://github.com/bookorbit/bookorbit) is a self-hosted ebook and audiobook library with its own
+Hardcover sync: when you read a book in BookOrbit, it sends your status, progress and dates to Hardcover, and from
+there Heliograph sends them on to your other services. For that to land on the right book, each BookOrbit book needs
+the right Hardcover book and edition. The **BookOrbit** tab (0.6.0+) does that.
+
+**Setup:** in **Settings → BookOrbit**, set:
+- **BookOrbit URL:** how Heliograph reaches it. From Docker that's usually `http://host.docker.internal:3000`.
+- **API key:** BookOrbit → Settings → API keys. It's stored encrypted, like every other secret.
+- **BookOrbit address in your browser:** where you open BookOrbit (for example `https://bookorbit.example.com`), so
+  the tab's **BookOrbit ↗** links work behind a reverse proxy. Blank: worked out from the URL.
+
+**Scan BookOrbit** checks every book and lists what it would change. Nothing changes until you press **Apply**.
+- **The Hardcover book:**
+  - A wrong link (another title, author or volume, or a box set) is replaced.
+  - A missing one is found by ISBN, then by title and author with smart matching.
+  - A near miss is shown as a suggestion with **Use this**. A ticked book with only a suggestion is linked to it on Apply.
+- **The edition:**
+  - A book already in your Hardcover library keeps the edition from your library entry, the one you read.
+  - Any other book gets the English edition matching your files: an ebook file → the ebook edition, only audio → the
+    audiobook edition, neither → print.
+- **The language:** set to `eng` (English spelled any other way is normalised; other languages are flagged).
+- **Find on Hardcover…** on any book searches Hardcover with the matcher's verdict on each result, or takes a pasted
+  Hardcover book or edition URL, slug, book id or `edition:<id>`.
+- **Not on Hardcover: set aside** takes a book that Hardcover doesn't have out of future scans; **Check it again**
+  brings it back.
+- **Groups:** filter chips group the list (wrong book, not linked, edition, language, needs a look, set aside). Books
+  you've linked or applied, and books that were already right, are under **Done**, with links to compare the book in
+  BookOrbit and on Hardcover.
+- **Rescans:** books found right are remembered and skipped unless they change (or **Recheck every book**). The list
+  survives a restart. If Hardcover's daily request limit runs out mid-scan, the scan pauses and the next one carries on.
+- **Ebooks added later:** with **When you add an ebook to an audiobook you haven't read yet…** on, Heliograph checks
+  every 6 hours and moves such books to the ebook edition.
+- **Fields locked in BookOrbit** are never changed.
+
+**Ratings and reviews from Hardcover** (on by default, **Copy your Hardcover star ratings and reviews into
+BookOrbit**). Hardcover is the source: each cycle, the ratings and reviews of books that changed on Hardcover are
+copied to the BookOrbit books linked to them. The first run goes through your whole library.
+- **Reviews** go into BookOrbit's *Personal Review*. A different note you wrote there yourself is kept unless
+  **…even replacing a different review…** is on. Deleting a review on Hardcover never deletes the note.
+- **Ratings:** BookOrbit only takes whole stars. A half or quarter star leaves BookOrbit's rating blank instead of
+  rounding it, because BookOrbit's own sync would send the rounded value back over yours.
+- **BookOrbit's *sync on rating change*:** in BookOrbit, a rating change makes BookOrbit sync that book to Hardcover,
+  and that sync sends BookOrbit's status, dates and edition too. While that setting is on, Heliograph only copies a
+  rating when all of those already agree with Hardcover, and logs the rest once. Held-back books are retried hourly.
+  **Turn it off** in BookOrbit's Hardcover settings: with Hardcover as the source of ratings it has nothing left to
+  do, and then every rating is copied. Keep BookOrbit's status and progress sync on; that's how your reading reaches
+  Hardcover.
+
+**Don't run two StoryGraph syncs:** BookOrbit can sync to StoryGraph itself. If Heliograph handles StoryGraph, keep
+that off in BookOrbit.
+
 ## Behaviour notes
+- **Reviews (0.6.0+, off by default):** with **Sync reviews** on, a review you write or edit on Hardcover is sent to
+  Goodreads, StoryGraph, Fable and Pagebound with its spoiler flag (StoryGraph has none).
+  - A review a service already has isn't sent again, so reviews you imported long ago are left as they are.
+  - A *different* review you wrote on a service yourself is left alone, unless **…even replacing a different review
+    you wrote on a service yourself** is on.
+  - Deleting a review on Hardcover never deletes it anywhere else.
+  - The first cycle after you turn it on also picks up the reviews you wrote earlier.
+  - LibraryThing reviews aren't supported yet.
+- **Hardcover's limits:** Hardcover allows about 60 requests a minute and 5,000 a day. A short wait is retried. When the
+  daily allowance runs out, Heliograph says when it resets instead of retrying for hours (0.6.0+).
 - **Matching:**
   - **Smart matching (0.6.0+)** decides whether a search result is your book. It runs entirely on your server: no AI
     service, no download, nothing sent anywhere.
