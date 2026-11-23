@@ -55,8 +55,8 @@ function mono(key){const b=BRAND[key]||['#666',(key||'?')[0].toUpperCase()];cons
 const safeUrl=u=>/^https?:\/\/\S+$/.test(u||'');
 function homeIcon(x,px){const i=icon(x.key,px||22);return safeUrl(x.home)?h('a',{href:x.home,target:'_blank',rel:'noopener noreferrer',title:'Open '+x.label},i):i}
 function icon(key,px){const i=h('img',{src:'/icons/'+key,width:px,height:px,alt:'',class:'ico'});let done=false;i.addEventListener('error',()=>{if(!done){done=true;i.setAttribute('src',mono(key))}});return i}
-function setTab(t){tab=t;tabToken++;clearTimeout(timer);timer=null;onClose=null;$('#nav').replaceChildren(...[['dash','Dashboard'],['books','Books'],['import','Import'],['hardcover','Hardcover'],['bookorbit','BookOrbit'],['settings','Settings'],['account',me.admin?'Users':'Account']].map(([k,l])=>h('button',{class:tab===k?'on':'',onclick:()=>setTab(k)},l)));
- ({dash:dash,books:books,import:importTab,hardcover:hardcoverTab,bookorbit:bookorbitTab,settings:settings,account:account})[t]()}
+function setTab(t){if(t==='hardcover'||t==='bookorbit'){toolSub=t==='hardcover'?'cleanup':'bookorbit';t='tools'}tab=t;tabToken++;clearTimeout(timer);timer=null;onClose=null;toolMount=null;$('#nav').replaceChildren(...[['dash','Dashboard'],['books','Books'],['import','Import'],['tools','Tools'],['settings','Settings'],['account',me.admin?'Users':'Account']].map(([k,l])=>h('button',{class:tab===k?'on':'',onclick:()=>setTab(k)},l)));
+ ({dash:dash,books:books,import:importTab,tools:toolsTab,settings:settings,account:account})[t]()}
 
 /* Account: your password; the admin also manages users and invite codes. */
 function account(){const m=$('#main'),tok=tabToken;
@@ -131,7 +131,45 @@ function dash(){const m=$('#main'),tok=tabToken;let ui=null;fill(m,h('p',{class:
  loop(async()=>{try{return await refresh()}catch(e){if(!ui)fill(m,h('div',{class:'msg bad'},e.message));else note(ui.res,e.message,'bad');return 8000}},tok)}
 
 /* Hardcover: data corrections. The only place Heliograph writes to Hardcover, and only when you press Apply. */
-function hardcoverTab(){const m=$('#main'),tok=tabToken,u={};
+/* Tools: occasional jobs, kept out of the way of everyday syncing. Each section mounts into toolMount. */
+let toolSub='cleanup',toolMount=null;
+function toolsTab(){const m=$('#main'),nav=h('div',{class:'row',style:'margin-bottom:12px;gap:6px'}),body=h('div');
+ const SECT=[['cleanup','Hardcover cleanup','Run once after importing from Goodreads: start dates and editions in your Hardcover library.'],
+             ['editions','Linked editions','Check that every book is linked to the right edition on your services.'],
+             ['bookorbit','BookOrbit','Only if you use BookOrbit: the right Hardcover book and edition for every BookOrbit book.']];
+ const cur=SECT.find(x=>x[0]===toolSub)||SECT[0];
+ nav.append(...SECT.map(([k,l])=>h('button',{class:'btn small'+(k===cur[0]?' pri':''),onclick:()=>{toolSub=k;setTab('tools')}},l)));
+ fill(m,nav,h('p',{class:'small mut',style:'margin:-4px 0 10px'},cur[2]),body);toolMount=body;
+ ({cleanup:hardcoverTab,editions:editionsTool,bookorbit:bookorbitTool})[cur[0]]()}
+async function bookorbitTool(){const tok=tabToken;let j={};try{j=await api('/api/bookorbit')}catch(e){}
+ if(tok!==tabToken)return;
+ if(j.bo_url){bookorbitTab();return}
+ fill(toolMount,h('div',{class:'card'},h('h3',{},'BookOrbit (optional)'),
+  h('p',{class:'small'},'For people who also run BookOrbit, a self-hosted ebook and audiobook library with its own Hardcover sync. Heliograph can link every BookOrbit book to the right Hardcover book and edition, and copy your Hardcover ratings and reviews into it.'),
+  h('p',{class:'small mut'},'Not set up. Add the BookOrbit URL and an API key in Settings → BookOrbit, then come back here.'),
+  h('button',{class:'btn',onclick:()=>setTab('settings')},'Open Settings')))}
+function editionsTool(){const m=toolMount,tok=tabToken,u={sig:''};
+ u.edMsg=h('div',{class:'small'});u.edList=h('div');u.edOut=h('div');
+ const edGo=fix=>async()=>{if(fix&&!confirm('This relinks the books listed below. On StoryGraph your entry (status, dates, rating) is moved to the right edition; elsewhere the current status is sent to the new edition. Continue?'))return;
+   try{await api('/api/editions',{fix});setTimeout(()=>tok===tabToken&&refresh(),300)}catch(e){note(u.edOut,e.message,'bad')}};
+ u.edCheck=h('button',{class:'btn',onclick:edGo(false)},'Check editions');
+ u.edFix=h('button',{class:'btn pri',style:'display:none',onclick:edGo(true)},'Fix them');
+ fill(m,h('div',{class:'card'},h('h3',{},'Linked editions'),
+   h('p',{class:'small mut'},'First links every book that isn’t linked yet (books recorded at the first run) to the entry already on your shelves there, then finds books on an audiobook or another-language edition (see Settings → Preferred edition language) and moves them to the right one. “Check editions” only looks. “Fix them” relinks; on StoryGraph it moves your entry with its dates and rating, elsewhere it sends the current status to the new edition. Works for StoryGraph, Goodreads and Fable: Pagebound and LibraryThing don’t say which edition is which.'),
+   h('div',{class:'row'},h('span',{class:'grow'},u.edMsg),u.edCheck,u.edFix),u.edOut,u.edList));
+ async function refresh(){const ej=await api('/api/editions');if(tok!==tabToken)return 8000;
+  u.edCheck.disabled=!!ej.running;u.edFix.disabled=!!ej.running;
+  setText(u.edMsg,ej.started?`${ej.message||''} · ${ej.done}/${ej.total} checked`+(ej.linked&&Object.keys(ej.linked).length?' · newly linked: '+Object.entries(ej.linked).map(([k,v])=>k+' '+v).join(', '):''):'');
+  const fixable=(ej.items||[]).filter(i=>i.new&&!/^fixed/.test(i.result||''));
+  u.edFix.style.display=!ej.running&&fixable.length?'':'none';setText(u.edFix,`Fix them (${fixable.length})`);
+  const items=ej.items||[],sg=sigOf(items);
+  if(sg!==u.sig){u.sig=sg;fill(u.edList,items.length?h('div',{class:'card',style:'margin-top:12px'},h('h3',{},`Wrong editions (${items.length})`),
+    h('p',{class:'small mut'},'Linked to an edition you don’t want. The line below each says what was, or would be, done.'),
+    items.map(i=>h('div',{class:'cand'},h('div',{class:'grow'},h('b',{},i.title),h('div',{class:'small mut'},`${i.authors} · ${i.label} · ${i.problem}`),h('div',{class:'small'},i.result||'')),h('button',{class:'btn small',onclick:()=>openBook(i.id)},'Open')))):null)}
+  return ej.running?2000:8000}
+ loop(async()=>{try{return await refresh()}catch(e){note(u.edOut,e.message,'bad');return 8000}},tok)}
+
+function hardcoverTab(){const m=toolMount||$('#main'),tok=tabToken,u={};
   u.hcOut=h('div');u.hcList=h('div');
   const hcRow=b=>{const res=h('div',{class:'small'});
     const opt=c=>h('option',{value:c.id,selected:c.id===b.suggested},[c.format,c.edition_format,c.pages?c.pages+' p':'',c.users?c.users+' readers':'',c.isbn?'ISBN '+c.isbn:'',c.title].filter(Boolean).join(' · '));
@@ -187,7 +225,7 @@ function hardcoverTab(){const m=$('#main'),tok=tabToken,u={};
   loop(async()=>{try{return await poll()}catch(e){note(d.out,e.message,'bad');return 8000}},tok)}
 
 /* BookOrbit: the right Hardcover book and edition for every book, so BookOrbit's own Hardcover sync is ready. */
-function bookorbitTab(){const m=$('#main'),tok=tabToken;
+function bookorbitTab(){const m=toolMount||$('#main'),tok=tabToken;
  const FIX={relink:'Wrong Hardcover book',link:'Not linked yet',edition:'Edition',language:'Language',ok:'Needs a look',error:'Error',aside:'Set aside',done:'Done'};
  // items keep their identity across polls (merged by key) and each row is rebuilt only when its own data changes,
  // so ticking a box or using a suggestion touches one row, not the whole list
@@ -309,9 +347,6 @@ function importTab(){const m=$('#main'),tok=tabToken;let ui=null;fill(m,h('p',{c
   u.cancel=h('button',{class:'btn danger',style:'display:none',onclick:async()=>{try{await api('/api/import/cancel',{});setTimeout(()=>tok===tabToken&&u.refresh(),300)}catch(e){note(u.out,e.message,'bad')}}},'Cancel');
   u.retry=h('button',{class:'btn',style:'display:none',onclick:async()=>{try{await api('/api/import/retry-failed',{});setTimeout(()=>tok===tabToken&&u.refresh(),300)}catch(e){note(u.out,e.message,'bad')}}},'Retry failed');
   const prevBox=chk(()=>imp.dry,v=>{imp.dry=v;setText(u.start,v?'Start preview':'Start import')});
-  u.edMsg=h('div',{class:'small'});u.edList=h('div');u.edOut=h('div');
-  const edGo=fix=>async()=>{if(fix&&!confirm('This relinks the books listed below. On StoryGraph your entry (status, dates, rating) is moved to the right edition; elsewhere the current status is sent to the new edition. Continue?'))return;
-    try{await api('/api/editions',{fix});setTimeout(()=>tok===tabToken&&u.refresh(),300)}catch(e){note(u.edOut,e.message,'bad')}};
   u.rm=h('div');
   const rmGo=remove=>async()=>{if(remove&&!confirm('Remove these books from your services (per Settings → When you remove a book from Hardcover)?'))return;
     try{const r=await api('/api/removals',{remove});note(u.rm,remove?`Done: ${r.removed} removed from services, ${r.kept} left in place, ${r.failed} failed (retried later).`:`Forgot ${r.forgotten} book(s); nothing was removed from your services.`,'ok')}catch(e){note(u.rm,e.message,'bad')}};
@@ -320,8 +355,6 @@ function importTab(){const m=$('#main'),tok=tabToken;let ui=null;fill(m,h('p',{c
       h('p',{class:'small mut'},`These are no longer in your Hardcover library. So many at once can be a glitch or a different account, so nothing was removed yet. “Remove from services” applies your setting (${({off:'off: nothing is removed from services',want:'only Want to Read books',all:'any status'})[r.mode]}); “Just forget them” only drops them from Heliograph.`),
       r.books.map(b=>h('div',{class:'cand'},h('div',{class:'grow'},h('b',{},b.title),h('div',{class:'small mut'},`${b.authors} · ${LBL[b.status]||b.status||''} · linked on ${b.services.join(', ')||'nothing'}`)))),
       h('div',{class:'row',style:'margin-top:6px'},h('span',{class:'grow'}),h('button',{class:'btn',onclick:rmGo(false)},'Just forget them'),h('button',{class:'btn danger',onclick:rmGo(true)},'Remove from services'))):null)};
-  u.edCheck=h('button',{class:'btn',onclick:edGo(false)},'Check editions');
-  u.edFix=h('button',{class:'btn pri',style:'display:none',onclick:edGo(true)},'Fix them');
   u.dl.append(h('a',{class:'btn',href:'/api/import/log?fmt=txt',download:''},'Download log (.txt)'),h('a',{class:'btn',href:'/api/import/log?fmt=csv',download:''},'Download results (.csv)'));u.dl.style.display='none';
   fill(m,u.rm,h('div',{class:'card'},h('h3',{},'Import library'),
    h('p',{class:'small mut'},'Re-sends every Hardcover book’s status, progress, rating and finish date to the selected services. It can take a long time (many requests per book) and writes to your accounts, so run a preview first. Books are processed one at a time, so normal syncing keeps working. Failed items are retried automatically (a few times per item, then again at the end); books that can’t be matched are flagged in the Books tab so you can link them by hand.'),
@@ -329,10 +362,7 @@ function importTab(){const m=$('#main'),tok=tabToken;let ui=null;fill(m,h('p',{c
    h('div',{class:'row',style:'margin-top:4px'},['reading','read','want','paused','dnf'].map(k=>box(LBL[k],imp.statuses,k))),
    h('div',{style:'margin-top:6px'},h('label',{class:'small'},chk(()=>imp.skip,v=>{imp.skip=v}),' Skip books that are already up to date on the service'),h('div',{class:'small mut',style:'margin-left:22px'},'Compares shelf, and where the service lets us read it back: rating (Goodreads*, StoryGraph, Fable) and finish date (Goodreads, Pagebound, LibraryThing). Anything that can’t be read is assumed correct. *when the page exposes it.')),
    h('div',{class:'row',style:'margin-top:6px'},h('label',{class:'small'},prevBox,' Preview only (don’t change anything)'),h('span',{class:'grow'}),u.retry,u.cancel,u.start),u.out),
-   h('div',{class:'prog'},h('div',{class:'bar'},u.bar),u.msg,u.stats,u.recent,u.dl),u.unm,u.fail,
-   h('div',{class:'card',style:'margin-top:12px'},h('h3',{},'Linked editions'),
-    h('p',{class:'small mut'},'First links every book that isn’t linked yet (books recorded at the first run) to the entry already on your shelves there, then finds books on an audiobook or another-language edition (see Settings → Preferred edition language) and moves them to the right one. “Check editions” only looks. “Fix them” relinks; on StoryGraph it moves your entry with its dates and rating, elsewhere it sends the current status to the new edition. Works for StoryGraph, Goodreads and Fable: Pagebound and LibraryThing don’t say which edition is which.'),
-    h('div',{class:'row'},h('span',{class:'grow'},u.edMsg),u.edCheck,u.edFix),u.edOut,u.edList));
+   h('div',{class:'prog'},h('div',{class:'bar'},u.bar),u.msg,u.stats,u.recent,u.dl),u.unm,u.fail);
   setText(u.start,imp.dry?'Start preview':'Start import');return u}
  function list(el,key,items,title,hint,row){const sg=sigOf(items);if(ui.sigs[key]===sg)return;ui.sigs[key]=sg;
   fill(el,items.length?h('div',{class:'card',style:'margin-top:12px'},h('h3',{},`${title} (${items.length})`),h('p',{class:'small mut'},hint),items.map(row)):null)}
@@ -355,15 +385,8 @@ function importTab(){const m=$('#main'),tok=tabToken;let ui=null;fill(m,h('p',{c
         h('button',{class:'btn small'+(s?'':' pri'),onclick:()=>openBook(i.id)},'Link manually…'))});
   list(ui.fail,'f',j.failed_items||[],'Failed','These errored even after automatic retries. “Retry failed” runs just these again.',
     i=>h('div',{class:'cand'},h('div',{class:'grow'},h('b',{},i.title),h('div',{class:'small mut'},i.authors+' · '+i.label),h('div',{class:'small',style:'color:var(--bad)'},i.error)),h('button',{class:'btn small',onclick:()=>openBook(i.id)},'Open')));
-  const ej=await api('/api/editions');if(tok!==tabToken)return 8000;
   ui.rmShow(await api('/api/removals'));
-  ui.edCheck.disabled=!!ej.running;ui.edFix.disabled=!!ej.running;
-  setText(ui.edMsg,ej.started?`${ej.message||''} · ${ej.done}/${ej.total} checked`+(ej.linked&&Object.keys(ej.linked).length?' · newly linked: '+Object.entries(ej.linked).map(([k,v])=>k+' '+v).join(', '):''):'');
-  const fixable=(ej.items||[]).filter(i=>i.new&&!/^fixed/.test(i.result||''));
-  ui.edFix.style.display=!ej.running&&fixable.length?'':'none';setText(ui.edFix,`Fix them (${fixable.length})`);
-  list(ui.edList,'e',ej.items||[],'Wrong editions','Linked to an edition you don’t want. The line below each says what was, or would be, done.',
-    i=>h('div',{class:'cand'},h('div',{class:'grow'},h('b',{},i.title),h('div',{class:'small mut'},`${i.authors} · ${i.label} · ${i.problem}`),h('div',{class:'small'},i.result||'')),h('button',{class:'btn small',onclick:()=>openBook(i.id)},'Open')));
-  return (j.running||ej.running)?2000:8000}
+  return j.running?2000:8000}
  onClose=()=>{if(ui)refresh().catch(()=>{})};
  loop(async()=>{try{return await refresh()}catch(e){if(!ui)fill(m,h('div',{class:'msg bad'},e.message));return 8000}},tok)}
 
@@ -445,7 +468,7 @@ async function openBook(id){const md=$('#modal');const flash={};let cover=null,p
 async function settings(){const m=$('#main');m.replaceChildren(h('p',{class:'mut'},'Loading…'));
  try{const s=await api('/api/settings');const stt=await api('/api/status').catch(()=>({}));const res=h('div');const inputs=[];
   const sec=s.sections.map(S=>h('div',{class:'card',style:'margin-bottom:12px'},h('div',{class:'row'},h('h3',{class:'grow'},S.label),
-    S.section==='hardcover'||['goodreads','storygraph','fable','pagebound','librarything'].includes(S.section)?h('button',{class:'btn small',onclick:async e=>{const o=e.target.nextSibling;o.textContent='Testing… (save first if you changed something)';try{const r=await api('/api/test/'+S.section,{});o.textContent=(r.ok?'✓ ':'✗ ')+r.message}catch(x){o.textContent='✗ '+x.message}}},'Test login'):null,h('span',{class:'small mut'})),
+    S.section==='hardcover'||['goodreads','storygraph','fable','pagebound','librarything','bookorbit'].includes(S.section)?h('button',{class:'btn small',onclick:async e=>{const o=e.target.nextSibling;o.textContent='Testing… (save first if you changed something)';try{const r=await api('/api/test/'+S.section,{});o.textContent=(r.ok?'✓ ':'✗ ')+r.message}catch(x){o.textContent='✗ '+x.message}}},'Test login'):null,h('span',{class:'small mut'})),
    S.fields.map(f=>{let inp;const name=S.section+'.'+f.key;
      if(f.kind==='bool')inp=h('input',{type:'checkbox',checked:!!f.value,disabled:f.locked});
      else if(f.kind.startsWith('choice:'))inp=h('select',{disabled:f.locked},...f.kind.slice(7).split(',').map(o=>h('option',{value:o,selected:f.value===o},o)));
@@ -455,6 +478,10 @@ async function settings(){const m=$('#main');m.replaceChildren(h('p',{class:'mut
      let autoTag=null;if(f.auto&&!f.value){autoTag=h('span',{class:'small mut'},'automatic');inp.addEventListener('input',()=>{autoTag.textContent=inp.value===f.auto||!inp.value?'automatic':'your own link'})}
      inputs.push({S:S.section,f,inp});
      return h('div',{class:'field'},h('label',{},f.label),h('div',{class:'row'},inp,autoTag,f.kind==='secret'&&f.set&&!f.locked?h('button',{class:'btn small danger',onclick:()=>{inp.value='__clear__';inp.type='text'}},'Clear'):null,f.locked?h('span',{class:'small mut'},'set by environment variable'):null))})));
+  {const bi=s.sections.findIndex(S=>S.section==='bookorbit');     // an optional integration: last, and folded away until it's set up
+   if(bi>=0){const card=sec.splice(bi,1)[0],url=(s.sections[bi].fields.find(f=>f.key==='url')||{}).value;
+    if(!url){const d=h('details',{class:'card',style:'margin-bottom:12px'},h('summary',{style:'cursor:pointer'},h('b',{},'BookOrbit'),h('span',{class:'small mut'},' · optional: only if you use BookOrbit')));
+     d.append(...[...card.childNodes].slice(1));sec.push(d)}else sec.push(card)}}
   if(savedMsg){note(res,savedMsg.t,savedMsg.c);savedMsg=null}
   fill(m,stt.secrets?h('div',{class:'msg small '+(stt.secrets.encrypted?'good':'warn')},stt.secrets.encrypted?'Secrets are stored encrypted in config.json.':'Secrets saved here are stored unencrypted in config.json — '+(stt.secrets.detail||'no key configured')+'. See README → Protecting secrets.'):null,h('p',{class:'mut small'},'Changes apply on the next sync cycle. A newly enabled service first records your current library (nothing is pushed) unless “First run” is set to import_all. Secrets are never shown here.'),...sec,
    h('div',{class:'row'},h('button',{class:'btn pri',onclick:async()=>{const body={};for(const{S,f,inp}of inputs){if(f.locked)continue;let v=f.kind==='bool'?inp.checked:inp.value;if(f.auto&&!f.value&&v===f.auto)v='';body[S]=body[S]||{};body[S][f.key]=v}
