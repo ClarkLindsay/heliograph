@@ -249,7 +249,42 @@ def test_apply_uses_a_ticked_suggestion_and_hardcover_url():
         assert eng.hardcover_url(8) == "https://hardcover.app/search?q=Lost%20Book"
 
 
-ALL = [test_kind_and_edition_rules, test_plan_book, test_engine_scan_apply_and_ebook_switch,
+def test_set_aside_a_book_hardcover_doesnt_have():
+    from heliograph.config import Config
+    from heliograph.engine import Engine
+    from heliograph.state import State
+
+    class Client:
+        def books(self): return [book(2, "Some Unknown Book", ["Nobody"], ["epub"])]
+
+    class Counting(Look):
+        searches = 0
+        def search(self, title, authors):
+            Counting.searches += 1
+            return super().search(title, authors)
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        eng = Engine(Config(os.path.join(tmp, "c.json")), [], State(os.path.join(tmp, "s.db")), logging.getLogger("t"), hardcover=object())
+        eng.bookorbit = lambda: Client()
+        orig = bo.HardcoverLookup
+        bo.HardcoverLookup = lambda hc: Counting()
+        scan = lambda full=False: (eng.start_bookorbit_scan(full), [time.sleep(0.05) for _ in iter(lambda: eng.bo_job["running"], False)])
+        try:
+            scan()
+            assert eng.bo_job["items"][0]["problem"] == "not found on Hardcover" and Counting.searches == 1
+            p = eng.bookorbit_set_aside("2")
+            assert p["fix"] == "aside" and not p["problem"]
+            scan(full=True)                                              # even a full recheck leaves it alone
+            assert Counting.searches == 1 and eng.bo_job["items"][0]["fix"] == "aside"
+            assert "1 set aside" in eng.bo_job["message"], eng.bo_job["message"]
+            eng.bookorbit_set_aside("2", False)                          # back in: the next scan looks again
+            scan()
+            assert Counting.searches == 2 and eng.bo_job["items"][0]["fix"] != "aside"
+        finally:
+            bo.HardcoverLookup = orig
+
+
+ALL = [test_set_aside_a_book_hardcover_doesnt_have, test_kind_and_edition_rules, test_plan_book, test_engine_scan_apply_and_ebook_switch,
        test_scan_pauses_at_hardcovers_daily_limit, test_parse_ref, test_find_on_hardcover_and_paste,
        test_apply_uses_a_ticked_suggestion_and_hardcover_url]
 

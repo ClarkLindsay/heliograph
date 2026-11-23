@@ -658,9 +658,16 @@ class Engine:
             books = client.books()
             job["total"] = len(books)
             look, seen, items = bookorbit.HardcoverLookup(self.hc()), self._bo_seen(), []
+            aside = self._bo_aside()
             for b in books:
                 sig = bookorbit.signature(b)
-                if not full and seen.get(str(b["id"])) == sig:
+                if str(b["id"]) in aside:                # you set it aside (not on Hardcover): listed, never looked up
+                    items.append({"id": b["id"], "key": str(b["id"]), "title": b.get("title") or "", "authors": b.get("authors") or [],
+                                  "kind": bookorbit.kind(b), "changes": {}, "why": [], "problem": None, "fix": "aside",
+                                  "result": "", "pick": False, "isbn13": b.get("isbn13"), "isbn10": b.get("isbn10"),
+                                  "source": {k: b.get(k) for k in ("files", "hardcoverId", "hardcoverEditionId", "language")}})
+                    job["items"] = items
+                elif not full and seen.get(str(b["id"])) == sig:
                     job["skipped"] += 1
                 else:
                     job["message"] = f"Checking '{b.get('title')}' on Hardcover…"
@@ -685,7 +692,10 @@ class Engine:
                 counts[p["fix"]] = counts.get(p["fix"], 0) + 1
             job["counts"] = counts
             fixable = sum(1 for p in items if p["changes"])
-            job["message"] = (f"{len(books)} books: {fixable} to fix" + (f", {len(items) - fixable} to look at" if len(items) > fixable else "")
+            aside_n = sum(1 for p in items if p["fix"] == "aside")
+            look_n = len(items) - fixable - aside_n
+            job["message"] = (f"{len(books)} books: {fixable} to fix" + (f", {look_n} to look at" if look_n else "")
+                              + (f", {aside_n} set aside" if aside_n else "")
                               + (f", {job['skipped']} already right" if job["skipped"] else "")) if items else \
                 f"All {len(books)} books have the right Hardcover book, edition and language"
             self.log.info("BookOrbit: %s", job["message"])
@@ -755,6 +765,32 @@ class Engine:
             self.state.set("bookorbit_job", json.dumps({k: v for k, v in self.bo_job.items() if k != "running"}, default=str))
         except Exception as e:
             self.log.debug("BookOrbit: couldn't save the list: %s", e)
+
+    def _bo_aside(self):
+        try:
+            return json.loads(self.state.get("bookorbit_aside") or "{}")
+        except (TypeError, ValueError):
+            return {}
+
+    def bookorbit_set_aside(self, key, aside=True):
+        """A book that isn't on Hardcover (and won't be): scans list it under "Set aside" and never look it up.
+        aside=False puts it back, to be checked on the next scan."""
+        p = self._bo_item(key)
+        saved = self._bo_aside()
+        if aside:
+            saved[str(p["id"])] = p["title"]
+            p.update(fix_was=p.get("fix") if p.get("fix") != "aside" else p.get("fix_was"), fix="aside", changes={},
+                     suggestion=None, problem=None, result="", why=[])
+        else:
+            saved.pop(str(p["id"]), None)
+            seen = self._bo_seen()
+            seen.pop(str(p["id"]), None)                 # make sure the next scan looks at it
+            self.state.set("bookorbit_seen", json.dumps(seen))
+            p.update(fix=p.get("fix_was") or "ok", problem="will be checked on the next scan", result="")
+        self.state.set("bookorbit_aside", json.dumps(saved))
+        self._bo_save()
+        self.log.info("BookOrbit: '%s' %s", p["title"], "set aside (not on Hardcover)" if aside else "back in the checks")
+        return p
 
     def _bo_item(self, key):
         p = next((x for x in self.bo_job.get("items") or [] if x["key"] == key), None)

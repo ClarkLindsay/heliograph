@@ -188,7 +188,7 @@ function hardcoverTab(){const m=$('#main'),tok=tabToken,u={};
 
 /* BookOrbit: the right Hardcover book and edition for every book, so BookOrbit's own Hardcover sync is ready. */
 function bookorbitTab(){const m=$('#main'),tok=tabToken;
- const FIX={relink:'Wrong Hardcover book',link:'Not linked yet',edition:'Edition',language:'Language',ok:'Needs a look',error:'Error'};
+ const FIX={relink:'Wrong Hardcover book',link:'Not linked yet',edition:'Edition',language:'Language',ok:'Needs a look',error:'Error',aside:'Set aside'};
  // items keep their identity across polls (merged by key) and each row is rebuilt only when its own data changes,
  // so ticking a box or using a suggestion touches one row, not the whole list
  const d={msg:h('div',{class:'small'}),bar:h('i',{style:'width:0%'}),list:h('div',{style:'margin-top:6px'}),out:h('div'),sel:new Set(),seen:0,picked:0,
@@ -252,18 +252,23 @@ function bookorbitTab(){const m=$('#main'),tok=tabToken;
      h('div',{class:'row',style:'margin-top:6px'},paste,h('button',{class:'btn small',onclick:e=>use(paste.value,e.target)},'Link')),
      h('div',{class:'small mut'},'A book: Heliograph picks the edition for your files (ebook, else audiobook, else print, English). An edition URL: that exact edition.'),msg));
    run()};
-  const findBtn=!done?h('button',{class:'btn small',disabled:d.running,onclick:finder},'Find on Hardcover…'):null;
+  const aside=i.fix==='aside';
+  const setAside=on=>async e=>{const btn=e.target;busy(btn,on?'Setting aside…':'…');
+    try{took(await api('/api/bookorbit/aside',{key:i.key,aside:on}))}catch(x){unbusy(btn);note(res,x.message,'bad')}};
+  const findBtn=aside?[h('span',{class:'small mut'},'Not on Hardcover: skipped by scans. '),h('button',{class:'btn small',disabled:d.running,onclick:setAside(false)},'Check it again')]:
+    !done?[h('button',{class:'btn small',disabled:d.running,onclick:finder},'Find on Hardcover…'),' ',
+           h('button',{class:'btn small',disabled:d.running,title:'Not on Hardcover (and won’t be): stop checking it',onclick:setAside(true)},'Not on Hardcover: set aside')]:null;
   const el=h('div',{class:'cand',style:'align-items:flex-start'},cb||h('span',{style:'width:13px;flex:none'}),h('div',{class:'grow'},
     h('div',{},h('b',{},i.title),h('span',{class:'small mut'},' · '+(i.authors||[]).slice(0,2).join(', ')+(i.kind?` · ${i.kind}`:'')),links),
     i.why&&i.why.length?h('div',{class:'small'},i.why.join(' · ')):null,
     i.problem&&!done?h('div',{class:'small',style:'color:var(--warn)'},i.problem):null,sug,
     i.result?h('div',{class:'small',style:`color:var(--${done?'ok':'bad'})`},i.result):null,res,
-    findBtn?h('div',{style:'margin-top:4px'},findBtn):null,panel));
+    findBtn?h('div',{class:'row',style:'margin-top:4px'},findBtn):null,panel));
   return {el,cb}}
- const rowSig=i=>sigOf([i.result,i.changes,i.suggestion&&i.suggestion.id,i.problem,i.book&&i.book.id,i.edition&&i.edition.id,d.running,!!d.base]);
+ const rowSig=i=>sigOf([i.fix,i.result,i.changes,i.suggestion&&i.suggestion.id,i.problem,i.book&&i.book.id,i.edition&&i.edition.id,d.running,!!d.base]);
  function render(){
   const fs=sigOf([d.items.map(i=>i.fix),d.filter]);
-  if(fs!==d.fsig){d.fsig=fs;fill(d.filters,['relink','link','edition','language','ok','error'].map(ch))}
+  if(fs!==d.fsig){d.fsig=fs;fill(d.filters,['relink','link','edition','language','ok','error','aside'].map(ch))}
   const v=vis(),shown=v.slice(0,400);
   for(const i of shown){const r=d.rows.get(i.key),sg=rowSig(i);if(!r||r.sig!==sg){const n=line(i);n.sig=sg;n.item=i;d.rows.set(i.key,n);if(r)r.el.replaceWith(n.el)}}
   const ls=sigOf(shown.map(i=>i.key));
