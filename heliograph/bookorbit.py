@@ -123,8 +123,9 @@ class HardcoverLookup:
 
     def search(self, title, authors):
         q = f"{title} {' '.join(authors[:1])}".strip()
-        hits = self.hc._q("""query($q: String!) { search(query: $q, query_type: "Book", per_page: 10) { results } }""",
-                          {"q": q})["search"]["results"].get("hits") or []
+        found = (self.hc._q("""query($q: String!) { search(query: $q, query_type: "Book", per_page: 10) { results } }""",
+                            {"q": q}).get("search") or {}).get("results")   # Hardcover sends null for some queries
+        hits = (found.get("hits") if isinstance(found, dict) else None) or []
         out = []
         for h in hits:
             d = h.get("document") or {}

@@ -235,7 +235,7 @@ function bookorbitTab(){const m=$('#main'),tok=tabToken;
    run()};
   const findBtn=!done?h('button',{class:'btn small',disabled:d.running,onclick:finder},'Find on Hardcover…'):null;
   return h('div',{class:'cand',style:'align-items:flex-start'},cb,h('div',{class:'grow'},
-    h('div',{},h('b',{},i.title),h('span',{class:'small mut'},' · '+(i.authors||[]).slice(0,2).join(', ')+` · ${i.kind}`),' ',hc),
+    h('div',{},h('b',{},i.title),h('span',{class:'small mut'},' · '+(i.authors||[]).slice(0,2).join(', ')+(i.kind?` · ${i.kind}`:'')),' ',hc),
     i.why&&i.why.length?h('div',{class:'small'},i.why.join(' · ')):null,
     i.problem?h('div',{class:'small',style:'color:var(--warn)'},i.problem):null,sug,res,
     i.result?h('div',{class:'small',style:`color:var(--${done?'ok':'bad'})`},i.result):null,

@@ -670,6 +670,8 @@ class Engine:
                         raise
                     except Exception as e:
                         p = {"id": b["id"], "title": b.get("title") or "", "authors": b.get("authors") or [], "changes": {},
+                             "kind": bookorbit.kind(b), "isbn13": b.get("isbn13"), "isbn10": b.get("isbn10"),
+                             "source": {k: b.get(k) for k in ("files", "hardcoverId", "hardcoverEditionId", "language")},
                              "why": [], "fix": "error", "problem": f"couldn't check: {str(e)[:150]}"}
                     if p["fix"] == "ok" and not p.get("problem"):
                         seen[str(b["id"])] = sig
