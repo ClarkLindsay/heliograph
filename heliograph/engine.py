@@ -1015,11 +1015,12 @@ class Engine:
         if self.dry or not (c.get("url") and c.get("api_key") and c.get("from_hardcover")):
             return 0
         sent = self._bo_sent()
-        if books is None or self.state.get("bookorbit_from_hc_done") != "1":
+        first = books is None or self.state.get("bookorbit_from_hc_done") != "1"
+        # ratings held back (BookOrbit out of step with Hardcover) are retried hourly: you may have fixed BookOrbit
+        retry = any(v.get("rating_skip") for v in sent.values()) and             time.time() - float(self.state.get("bookorbit_retry_at") or 0) > 3600
+        if first or retry:
             books = self.hc().fetch_library()
-            first = True
-        else:
-            first = False
+            self.state.set("bookorbit_retry_at", str(time.time()))
         books = [b for b in books if b.rating or b.review or str(b.ub_id) in sent]
         if not books and not first:
             return 0
