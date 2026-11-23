@@ -213,7 +213,7 @@ function bookorbitTab(){const m=$('#main'),tok=tabToken;
  const ch=c=>{const v=d.items.filter(i=>i.fix===c);return v.length?h('a',{href:'#',class:'chip'+(d.filter===c?' recorded':''),onclick:e=>{e.preventDefault();d.filter=d.filter===c?'':c;render()}},`${FIX[c]||c} (${v.length})`):null};
  const ext=(href,t)=>h('a',{class:'small',href,target:'_blank',rel:'noopener noreferrer'},t);
  const hcUrl=(b,ed)=>`https://hardcover.app/books/${b.slug||b.id}`+(ed&&ed.id?`/editions/${ed.id}`:'');
- const changed=i=>{d.rows.delete(i.key);render()};           // one row's data changed: rebuild just that row
+ const changed=()=>render();                                  // render() sees the row's data changed and swaps just that row
  function line(i){const done=isDone(i),can=canApply(i);
   const cb=can?h('input',{type:'checkbox',checked:d.sel.has(i.key),disabled:d.running,onchange:e=>{e.target.checked?d.sel.add(i.key):d.sel.delete(i.key);syncSel()}}):null;
   const res=h('div',{class:'small'});
