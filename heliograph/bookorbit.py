@@ -241,6 +241,38 @@ def pick_edition(editions, want, isbns=()):
 
 
 # ---------------------------------------------------------------- the plan for one book
+class Library(dict):
+    """{Hardcover slug or book id (str): the edition in your Hardcover library}, plus `owned`: the books themselves
+    ({id, slug, title, authors}), so another Hardcover record of a book you have can be spotted."""
+    def __init__(self, *a, owned=(), **kw):
+        super().__init__(*a, **kw)
+        self.owned = list(owned)
+
+
+def _first_word(title):
+    return (smartmatch._tokens(smartmatch.main_title(title)) or [""])[0]
+
+
+def owned_match(library, title, authors, matcher, near=False):
+    """The one book in your Hardcover library that is this book, or None (none, or more than one that fit).
+    near=True: -> (match, strong). A near miss (a subtitle apart, say) comes back with strong=False, for you to
+    confirm: "Mistborn" and "Mistborn: Secret History" are different books. Another volume never counts."""
+    owned = getattr(library, "owned", None) or []
+    first = _first_word(title)
+    cands = [o for o in owned if _first_word(o.get("title")) == first]     # cheap filter before the matcher
+    ranked = matcher.evaluate(title, authors, cands) if cands else []
+    ok = [r for r in ranked if r["ok"]]
+    if len(ok) == 1:
+        return (ok[0], True) if near else ok[0]["cand"]
+    if not near or ok:
+        return (None, False) if near else None
+    mine = smartmatch._tokens(smartmatch.main_title(title))
+    close = [r for r in ranked if not r["blocked"] and r["confidence"] >= smartmatch.SUGGEST
+             and not any("volume" in why for why in r["reasons"])
+             and smartmatch._tokens(smartmatch.main_title(r["cand"].get("title"))) == mine]   # only a subtitle apart
+    return (close[0], False) if len(close) == 1 else (None, False)
+
+
 def library_edition(library, book):
     """The edition your Hardcover library has for this Hardcover book (the one you read), or None.
     library: {slug or book id (str): edition id}."""
@@ -269,11 +301,25 @@ def plan_book(bo, look, matcher=None, library=None):
         r = matcher.evaluate(title, authors, [hb])[0]
         return r if r["ok"] else None
 
-    # 1. the Hardcover book: the current link if it's right, else ISBN, else a search
+    # 1. the Hardcover book: the one in your Hardcover library if it's there (Hardcover can have several records of a
+    #    book, and BookOrbit's own sync would add a second entry for another one), else the current link if it's
+    #    right, else ISBN, else a search
     current = look.book(bo["hardcoverId"]) if bo.get("hardcoverId") else None
+    found, strong = owned_match(library, title, authors, matcher, near=True)
+    owned = found["cand"] if found and strong else None
+    near = found if found and not strong else None
     book, how = None, None
-    if current and fits(current):
+    if current and near and str(near["cand"]["id"]) == str(current["id"]):
+        book, how, near = current, "kept", None        # already on your library's record of it: leave it there
+    elif current and fits(current) and not (owned and str(owned["id"]) != str(current["id"])):
         book, how = current, "kept"
+    elif owned:
+        book, how = owned, "library"
+        if current:
+            out["why"].append(f"linked to “{current['title']}”, but your Hardcover library has this book as "
+                              f"“{owned['title']}”")
+        else:
+            out["why"].append(f"in your Hardcover library as “{owned['title']}”")
     else:
         for isbn in isbns:
             hb = look.by_isbn(isbn)
@@ -296,10 +342,21 @@ def plan_book(bo, look, matcher=None, library=None):
                     out["suggestion"] = {"id": near["cand"]["id"], "slug": near["cand"].get("slug"),
                                          "title": near["cand"]["title"], "authors": near["cand"]["authors"],
                                          "confidence": round(near["confidence"], 2), "reasons": near["reasons"]}
-    if current and how != "kept":
+    if how == "library":
+        pass
+    elif current and how != "kept":
         out["why"].append(f"linked to “{current['title']}” by {', '.join(current['authors'][:2]) or '?'}, which isn't this book")
     elif bo.get("hardcoverId") and not current:
         out["why"].append(f"linked to Hardcover “{bo['hardcoverId']}”, which doesn't exist")
+
+    # a near match in your library (a subtitle apart) that isn't the book chosen: ask instead of linking either
+    if near and not (book and str(book["id"]) == str(near["cand"]["id"])):
+        c = near["cand"]
+        out["suggestion"] = {"id": c["id"], "slug": c.get("slug"), "title": c["title"], "authors": c.get("authors") or [],
+                             "confidence": round(near["confidence"], 2),
+                             "reasons": ["in your Hardcover library"] + list(near["reasons"])}
+        out["why"].append(f"your Hardcover library has “{c['title']}”: is that this book?")
+        book = None
 
     # 2. the edition: a book already in your Hardcover library keeps the edition you read there; otherwise the one
     #    your files call for
@@ -334,6 +391,8 @@ def plan_book(bo, look, matcher=None, library=None):
             out["book"] = book
     elif not out.get("suggestion"):
         out["problem"] = "not found on Hardcover"
+    elif near:
+        out["problem"] = "check the Hardcover book: your library has a similar one"
     else:
         out["problem"] = "no confident match on Hardcover"
 

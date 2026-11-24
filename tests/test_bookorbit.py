@@ -1,6 +1,6 @@
 import logging, os, sys, tempfile, time
 sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
-from heliograph import bookorbit as bo
+from heliograph import bookorbit as bo, smartmatch
 
 
 def ed(i, fmt, lang="English", isbn=None, users=0, label=None):
@@ -367,6 +367,51 @@ def test_ratings_and_reviews_from_hardcover():
         assert eng.bookorbit_from_hardcover([dune]) == 0 and client.calls == []
 
 
+def test_your_library_record_of_a_book_wins():
+    look = Look()
+    mine = {"id": 3, "slug": "dune-1965", "title": "Dune", "authors": ["Frank Herbert"]}
+    look.books["dune-1965"] = mine
+    lib = bo.Library({"dune-1965": 31, "3": 31}, owned=[mine])
+    # linked to another record of Dune: your library's record wins, with its edition
+    p = bo.plan_book(book(1, "Dune", ["Frank Herbert"], ["epub"], hardcoverId="dune", hardcoverEditionId="12"), look,
+                     library=lib)
+    assert p["changes"] == {"hardcoverId": "dune-1965", "hardcoverEditionId": "31"}, p
+    assert "your Hardcover library has this book" in p["why"][0]
+    # not linked yet: found in your library, no search needed
+    p = bo.plan_book(book(1, "Dune", ["Frank Herbert"], ["epub"]), look, library=lib)
+    assert p["changes"]["hardcoverId"] == "dune-1965" and "in your Hardcover library" in p["why"][0]
+    # already on your library's record: nothing to do
+    p = bo.plan_book(book(1, "Dune", ["Frank Herbert"], ["epub"], hardcoverId="dune-1965", hardcoverEditionId="31"),
+                     look, library=lib)
+    assert p["fix"] == "ok" and not p["changes"]
+    # two records of it in your library: ambiguous, so the usual rules decide
+    two = bo.Library({"dune-1965": 31}, owned=[mine, dict(mine, id=4, slug="dune-again")])
+    p = bo.plan_book(book(1, "Dune", ["Frank Herbert"], ["epub"], hardcoverId="dune", hardcoverEditionId="12"), look,
+                     library=two)
+    assert p["fix"] == "ok"
+    # your library has it only a subtitle apart: not linked either way, it's yours to confirm
+    sub = {"id": 5, "slug": "dune-sub", "title": "Dune: The Novel", "authors": ["Frank Herbert"]}
+    look.books["dune-sub"] = sub
+    near = bo.Library({"dune-sub": 51}, owned=[sub])
+    p = bo.plan_book(book(1, "Dune", ["Frank Herbert"], ["epub"], hardcoverId="dune", hardcoverEditionId="12"), look,
+                     library=near)
+    assert not p["changes"].get("hardcoverId") and p["suggestion"]["slug"] == "dune-sub", p
+    assert "similar" in p["problem"] and "in your Hardcover library" in p["suggestion"]["reasons"]
+    # ... and a book already on that record of yours stays on it
+    p = bo.plan_book(book(1, "Dune", ["Frank Herbert"], ["epub"], hardcoverId="dune-sub", hardcoverEditionId="51"),
+                     look, library=near)
+    assert p["fix"] == "ok" and not p["changes"], p
+    # a volume of a graphic adaptation isn't the book
+    gn = bo.Library({}, owned=[{"id": 9, "slug": "dune-vol-1", "title": "Dune, Vol. 1", "authors": ["Frank Herbert"]}])
+    assert bo.owned_match(gn, "Dune", ["Frank Herbert"], smartmatch.Matcher()) is None
+    # nor is another book that shares words with it
+    for other in ("The Way of Kings", "Ender's Game", "Earth Unaware"):
+        lb = bo.Library({}, owned=[{"id": 8, "slug": "x", "title": other, "authors": ["A B"]}])
+        title = {"The Way of Kings": "The Way of Kings Prime", "Ender's Game": "Ender's Shadow",
+                 "Earth Unaware": "Earth Afire"}[other]
+        assert bo.owned_match(lb, title, ["A B"], smartmatch.Matcher(), near=True) == (None, False), other
+
+
 def test_books_you_have_read_keep_your_hardcover_edition():
     from heliograph.config import Config
     from heliograph.engine import Engine
@@ -407,7 +452,7 @@ def test_books_you_have_read_keep_your_hardcover_edition():
             bo.HardcoverLookup = orig
 
 
-ALL = [test_books_you_have_read_keep_your_hardcover_edition, test_ratings_and_reviews_from_hardcover, test_set_aside_a_book_hardcover_doesnt_have, test_kind_and_edition_rules, test_plan_book, test_engine_scan_apply_and_ebook_switch,
+ALL = [test_your_library_record_of_a_book_wins, test_books_you_have_read_keep_your_hardcover_edition, test_ratings_and_reviews_from_hardcover, test_set_aside_a_book_hardcover_doesnt_have, test_kind_and_edition_rules, test_plan_book, test_engine_scan_apply_and_ebook_switch,
        test_scan_pauses_at_hardcovers_daily_limit, test_parse_ref, test_find_on_hardcover_and_paste,
        test_apply_uses_a_ticked_suggestion_and_hardcover_url]
 

@@ -179,8 +179,10 @@ class BookOrbitJobs:
     def _bo_library(self):
         """{Hardcover slug or book id: the edition in your Hardcover library}: a book you've read keeps that edition
         in BookOrbit. A few Hardcover requests (the library comes in pages of 100)."""
-        lib = {}
+        lib = bookorbit.Library()
         for b in self.hc().fetch_library():
+            if b.book_id:
+                lib.owned.append({"id": b.book_id, "slug": b.slug, "title": b.title, "authors": list(b.authors)})
             if b.edition_id:
                 if b.slug:
                     lib[b.slug] = b.edition_id
@@ -190,10 +192,18 @@ class BookOrbitJobs:
         return lib
 
     def _bo_reads_differ(self, bo, library):
-        """A book checked before whose BookOrbit edition isn't your Hardcover library's: check it again."""
-        mine = library.get(str(bo.get("hardcoverId") or "")) if bo.get("hardcoverId") else None
-        return bool(mine) and str(mine) != str(bo.get("hardcoverEditionId") or "") and \
-            "hardcoverEditionId" not in (bo.get("lockedFields") or [])
+        """A book checked before whose BookOrbit edition isn't your Hardcover library's, or that your library has
+        under another Hardcover record: check it again."""
+        hid = str(bo.get("hardcoverId") or "")
+        mine = library.get(hid) if hid else None
+        if mine:
+            return str(mine) != str(bo.get("hardcoverEditionId") or "") and \
+                "hardcoverEditionId" not in (bo.get("lockedFields") or [])
+        if not hid or "hardcoverId" in (bo.get("lockedFields") or []):
+            return False
+        found, _ = bookorbit.owned_match(library, bo.get("title") or "", list(bo.get("authors") or []), self.matcher,
+                                         near=True)
+        return bool(found) and hid not in (str(found["cand"]["id"]), str(found["cand"].get("slug") or ""))
 
     def _bo_aside(self):
         try:

@@ -4,6 +4,12 @@ What changed in each release of Heliograph. Each release's notes on GitHub are t
 
 ## Unreleased
 
+### Fixed
+- **Tools → BookOrbit:** when your Hardcover library has a book under a different Hardcover record (Hardcover often
+  has several), the scan uses your library's record instead of linking another one. BookOrbit's own sync would
+  otherwise add the book to your Hardcover library a second time. If the two are only a subtitle apart, it asks
+  you under *Needs a look* instead of deciding.
+
 ## 0.6.2 (2026-11-23)
 
 ### Fixed
