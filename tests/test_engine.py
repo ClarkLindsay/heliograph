@@ -92,6 +92,54 @@ def test_failure_warning_only_when_something_failed():
         del eng.log.warning
 
 
+def test_switching_between_pages_and_audio_compares_like_with_like():
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        hc, p, eng = make(tmp, "import_all")
+        b = hc.lib[1] = Book(1, "A", status="reading", pages=50, total_pages=500)
+        eng.run_once(); p.calls.clear()                              # p.50 of 500 = 10%
+        b.audio, b.seconds, b.total_seconds = True, 360, 3600       # now the audiobook, 10% in
+        eng.run_once()
+        assert p.calls == [], p.calls                               # same place: 10 (%) isn't compared with 50 (pages)
+        b.seconds = 720; eng.run_once()
+        assert p.calls == [("progress", "R1", 20, 300)], p.calls
+        p.calls.clear()
+        b.audio, b.seconds, b.total_seconds, b.pages = False, None, None, 105   # back to the ebook, 21%
+        eng.run_once()
+        assert p.calls == [("progress", "R1", 105, 300)], p.calls   # a bit further on: sent, not held as "back"
+        assert not eng.held_back()
+
+
+def test_progress_going_backwards_waits_for_you():
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        hc, p, eng = make(tmp, "import_all")
+        warned = []
+        eng.log.warning = lambda msg, *a, **k: warned.append(msg % a)
+        b = hc.lib[1] = Book(1, "A", status="reading", pages=200, total_pages=500)
+        eng.run_once(); p.calls.clear()
+        b.pages = 40                                                # an app reset its position
+        eng.run_once(); eng.run_once()
+        assert p.calls == [] and 1 in eng.held_back()               # held, not sent
+        assert len([w for w in warned if "went back" in w]) == 1 and "p.200 to p.40" in warned[0]
+        b.rating = 4; b.status = "reading"; eng.run_once()          # (anything else still syncs as usual)
+        out = eng.resolve_back(1, send=True)
+        assert p.calls == [("progress", "R1", 40, 300)] and out[0]["ok"], (p.calls, out)
+        assert not eng.held_back()
+        p.calls.clear(); eng.run_once(); assert p.calls == []
+        # going back again, and this time you keep the services' progress
+        b.pages = 300; eng.run_once(); p.calls.clear()
+        b.pages = 10; eng.run_once()
+        assert 1 in eng.held_back()
+        assert eng.resolve_back(1, send=False) == [] and not eng.held_back()
+        eng.run_once(); eng.run_once(); assert p.calls == []        # quiet while Hardcover stays there
+        b.pages = 310; eng.run_once()
+        assert p.calls == [("progress", "R1", 310, 300)]            # further on again: syncing carries on
+        # a re-read starts over: not "back"
+        b.status = "read"; eng.run_once(); p.calls.clear()
+        b.status, b.pages = "reading", 5; eng.run_once()
+        assert ("status", "R1", "reading") in p.calls and not eng.held_back()
+        del eng.log.warning
+
+
 def test_per_book_error_does_not_block_others_and_holds_window():
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         hc, p, eng = make(tmp, "import_all")
@@ -397,7 +445,7 @@ def test_parse_audiobook():
 
 
 if __name__ == "__main__":
-    for t in (test_reviews, test_audiobook_progress_is_sent_as_percent, test_parse_audiobook, test_flow, test_failed_update_is_retried_even_outside_the_window, test_failure_warning_only_when_something_failed, test_per_book_error_does_not_block_others_and_holds_window,
+    for t in (test_reviews, test_audiobook_progress_is_sent_as_percent, test_parse_audiobook, test_flow, test_failed_update_is_retried_even_outside_the_window, test_failure_warning_only_when_something_failed, test_switching_between_pages_and_audio_compares_like_with_like, test_progress_going_backwards_waits_for_you, test_per_book_error_does_not_block_others_and_holds_window,
               test_steps_and_throttle, test_import_all_and_want_filter, test_new_service_gets_own_baseline,
               test_dry_run_changes_nothing, test_link_is_remembered_and_unmatched_is_throttled, test_status_only_provider_gets_no_progress, test_stuck_service_does_not_block_the_others,
               test_editions_check_and_fix, test_books_removed_from_hardcover, test_profile_links_are_refreshed_weekly, test_parse):

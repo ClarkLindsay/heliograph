@@ -117,17 +117,25 @@ def link_view(link, provider):
             suggest = json.loads(link["suggest"])
         except (TypeError, ValueError):
             suggest = None
+    held = None
+    try:
+        h = json.loads(link.get("held") or "null")
+        if h and not h.get("keep") and not h.get("ok"):
+            held = {k: h.get(k) for k in ("from", "from_unit", "to", "unit", "at")}
+    except (TypeError, ValueError):
+        pass
     return {"state": state, "remote_id": rid, "url": provider.book_url(rid) if rid else None,
             "manual": bool(link["manual"]), "error": link["error"], "pushed_at": link["pushed_at"] or None,
-            "suggest": suggest}
+            "suggest": suggest, "held": held}
 
 
 def book_view(b, links, providers):
     pct = b.percent
+    svcs = {p.key: link_view(links.get(p.key) or dict(p_default(p)), p) for p in providers}
     return {"id": b.ub_id, "title": b.title, "authors": b.authors, "status": b.status, "pages": b.pages,
             "total_pages": b.total_pages, "percent": pct, "rating": b.rating, "finished_on": b.finished_on,
             "listened": [b.seconds, b.total_seconds] if b.timed else None,
-            "services": {p.key: link_view(links.get(p.key) or dict(p_default(p)), p) for p in providers}}
+            "services": svcs, "back": next((v["held"] for v in svcs.values() if v["held"]), None)}
 
 
 def p_default(_p):
@@ -168,7 +176,7 @@ class Api:
             services.append({"key": p.key, "label": p.label, "enabled": p.enabled, "counts": counts, "home": p.home_url()})
         st = dict(self.e.status)
         st["hardcover_home"] = self.hardcover_home()
-        st.update(books=self.e.state.book_count(), services=services, now=time.time(),
+        st.update(books=self.e.state.book_count(), services=services, now=time.time(), progress_back=len(self.e.held_back()),
                   poll_minutes=self.cfg["common"]["poll_interval_minutes"], job=self.import_status(),
                   secrets={"encrypted": self.cfg.encryption_enabled, "plaintext": self.cfg._plaintext_on_disk,
                          "detail": self.cfg.crypto.describe()})
@@ -176,15 +184,18 @@ class Api:
 
     def books(self, q):
         text, status = (q.get("q") or [""])[0].strip(), (q.get("status") or [""])[0]
-        problems = (q.get("problems") or [""])[0] in ("1", "nomatch")
+        flag = (q.get("problems") or [""])[0]
+        problems = flag in ("1", "nomatch")
         offset, limit = int((q.get("offset") or ["0"])[0]), min(int((q.get("limit") or ["50"])[0]), 200)
         books = self.e.state.books(text or None, status or None)
         books.sort(key=lambda b: (STATUS_ORDER.get(b.status, 9), (b.title or "").lower()))
         by_book, prov = self.e.state.links_by_book(), self.enabled_providers
         views = [book_view(b, by_book.get(b.ub_id, {}), prov) for b in books]
         if problems:
-            want = ("nomatch",) if (q.get("problems") or [""])[0] == "nomatch" else ("nomatch", "error")
-            views = [v for v in views if any(s["state"] in want for s in v["services"].values())]
+            want = ("nomatch",) if flag == "nomatch" else ("nomatch", "error")
+            views = [v for v in views if v["back"] or any(s["state"] in want for s in v["services"].values())]
+        elif flag == "back":
+            views = [v for v in views if v["back"]]
         return {"total": len(views), "books": views[offset: offset + limit]}
 
     def book(self, ub_id):
@@ -265,6 +276,10 @@ class Api:
 
     def push_all(self, ub_id):
         res = self._guard(self.e.push_all, ub_id)
+        return {"results": res, "book": self.book(ub_id)}
+
+    def resolve_back(self, ub_id, body):
+        res = self._guard(self.e.resolve_back, ub_id, bool(body.get("send")))
         return {"results": res, "book": self.book(ub_id)}
 
     def import_start(self, body):
@@ -663,6 +678,8 @@ def make_handler(hub, cfg, server_log):
                     return api._guard(api.e.hardcover_set_edition, ub, ed)
                 m = re.fullmatch(r"/api/book/(\d+)/push-all", path)
                 if m: return api.push_all(int(m.group(1)))
+                m = re.fullmatch(r"/api/book/(\d+)/progress-back", path)
+                if m: return api.resolve_back(int(m.group(1)), body)
                 m = re.fullmatch(r"/api/test/(\w+)", path)
                 if m: return api.test(m.group(1))
                 m = re.fullmatch(r"/api/book/(\d+)/(\w+)/(search|link|unlink|skip|push)", path)

@@ -4,6 +4,16 @@ What changed in each release of Heliograph. Each release's notes on GitHub are t
 
 ## Unreleased
 
+### Added
+- **Progress that goes backwards waits for you.** If Hardcover says you're further back in a book you're still reading
+  (an app that reset its position, say), Heliograph doesn't send it. The book is flagged: a banner on the Dashboard,
+  **↩ Progress went back** in the Books filter, and on the book itself **Yes, send it** or **No, keep my services'
+  progress**. Starting a re-read isn't counted, and the book's status and rating still sync as usual.
+
+### Fixed
+- **Switching between the audiobook and the ebook** no longer compares a percentage with a page number. Before, going
+  from page 50 to 10% of the audiobook looked like a big jump and was sent; now both are compared as percentages.
+
 ## 0.6.3 (2026-11-25)
 
 ### Fixed

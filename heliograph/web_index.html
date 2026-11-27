@@ -102,12 +102,13 @@ function closeModal(){$('#modal').replaceChildren();if(onClose)onClose()}
 function dash(){const m=$('#main'),tok=tabToken;let ui=null;fill(m,h('p',{class:'mut'},'Loading…'));
  function build(){
   const u={res:h('div'),sum:h('span'),nxt:h('span',{class:'mut small'}),sec:h('div',{class:'msg warn small',style:'display:none'}),cnt:h('p',{class:'mut small'}),
-   imp:h('div',{class:'msg small',style:'display:none'}),cards:h('div',{class:'cards'}),pre:h('pre',{},'…'),refs:{},keys:'',logTxt:null};
+   imp:h('div',{class:'msg small',style:'display:none'}),back:h('div',{class:'msg warn small',style:'display:none'}),cards:h('div',{class:'cards'}),pre:h('pre',{},'…'),refs:{},keys:'',logTxt:null};
+  u.backText=h('span');u.back.append(u.backText,' ',h('a',{href:'#',onclick:e=>{e.preventDefault();bq={q:'',status:'',flag:'back',offset:0};setTab('books')}},'Review them on the Books tab'));
   u.impText=h('span');u.imp.append(u.impText,' ',h('a',{href:'#',onclick:e=>{e.preventDefault();setTab('import')}},'Open the Import tab'));
   fill(m,h('div',{class:'row'},h('b',{},'Last cycle: '),u.sum,h('span',{class:'grow'}),u.nxt,
      h('button',{class:'btn pri',onclick:async()=>{try{await api('/api/sync',{});note(u.res,'Sync requested.','good');setTimeout(()=>tok===tabToken&&refresh(),3000)}catch(e){note(u.res,e.message,'bad')}}},'Sync now'),
      h('button',{class:'btn',onclick:async e=>{e.target.disabled=true;try{const r=await api('/api/refresh-library',{});note(u.res,`Library refreshed: ${r.books} books.`,'good')}catch(x){note(u.res,x.message,'bad')}e.target.disabled=false}},'Refresh library')),
-   u.sec,u.imp,u.res,u.cnt,u.cards,h('h3',{},'Recent log'),u.pre);return u}
+   u.sec,u.back,u.imp,u.res,u.cnt,u.cards,h('h3',{},'Recent log'),u.pre);return u}
  function cards(s){const list=[{key:'hardcover',label:'Hardcover (source)',enabled:true,counts:null,home:s.hardcover_home},...s.services];
   const keys=list.map(x=>x.key+'|'+x.home).join();
   if(keys!==ui.keys){ui.keys=keys;ui.refs={};fill(ui.cards,list.map(x=>{const r={state:h('div',{class:'small'}),counts:h('div',{class:'small mut'})};ui.refs[x.key]=r;const out=h('div',{class:'small mut'});
@@ -122,6 +123,7 @@ function dash(){const m=$('#main'),tok=tabToken;let ui=null;fill(m,h('p',{class:
   setText(ui.sum,s.last_end?`${s.examined} book(s) examined, ${s.pushed} update(s) pushed — ${s.result}`:s.result);
   setText(ui.nxt,next>0?`next in ~${Math.ceil(next/60)} min (every ${s.poll_minutes} min)`:'');
   const pl=s.secrets&&s.secrets.plaintext;ui.sec.style.display=pl?'':'none';setText(ui.sec,pl?`${pl} secret(s) are stored unencrypted in config.json. See README → Protecting secrets.`:'');
+  const nb=s.progress_back||0;ui.back.style.display=nb?'':'none';setText(ui.backText,nb?`↩ ${nb} book(s): Hardcover says your progress went backwards. It wasn't sent, so your services keep the further position until you confirm it.`:'');
   const j=s.job||{};ui.imp.style.display=j.running?'':'none';if(j.running)setText(ui.impText,`${j.dry?'Preview':'Import'} running: ${j.done}/${j.total} books — ${j.message||''}.`);
   setText(ui.cnt,`${s.books} books known from Hardcover.`);cards(s);
   const l=await api('/api/log?n=150');if(tok!==tabToken)return 8000;const txt=l.lines.join('\n');
@@ -394,11 +396,11 @@ let bq={q:'',status:'',flag:'',offset:0};
 async function books(){const m=$('#main'),tok=tabToken;
  const q=h('input',{type:'text',placeholder:'Search title or author',value:bq.q,class:'grow',onkeydown:e=>{if(e.key==='Enter')go()}});
  const st=h('select',{},...[['','All statuses'],['reading','Reading'],['want','Want to read'],['read','Read'],['paused','Paused'],['dnf','Did not finish']].map(([v,l])=>h('option',{value:v,selected:bq.status===v},l)));
- const fl=h('select',{},...[['','All books'],['any','Needs attention (no match / errors)'],['nomatch','⚑ Flagged: no match']].map(([v,l])=>h('option',{value:v,selected:bq.flag===v},l)));
+ const fl=h('select',{},...[['','All books'],['any','Needs attention (no match / errors / progress back)'],['nomatch','⚑ Flagged: no match'],['back','↩ Progress went back']].map(([v,l])=>h('option',{value:v,selected:bq.flag===v},l)));
  const out=h('div');let sig='',loaded=0,tbody=null;
  function go(){bq={q:q.value,status:st.value,flag:fl.value,offset:0};load('reset')}
  const rowFor=b=>{const nm=Object.values(b.services).some(v=>v.state==='nomatch');return h('tr',{class:'book',onclick:()=>openBook(b.id)},
-   h('td',{},nm?h('span',{class:'flag',title:'No match on at least one service: open it to link the right edition'},'⚑ '):null,h('b',{},b.title),h('div',{class:'small mut'},b.authors.join(', '))),
+   h('td',{},b.back?h('span',{class:'flag',title:'Progress went backwards on Hardcover: open it to confirm before it is sent'},'↩ '):null,nm?h('span',{class:'flag',title:'No match on at least one service: open it to link the right edition'},'⚑ '):null,h('b',{},b.title),h('div',{class:'small mut'},b.authors.join(', '))),
    h('td',{class:'small'},b.status||'—'),
    h('td',{class:'small'},b.status==='reading'&&(b.pages!=null||b.listened)?[b.listened?`${b.percent}% listened`:`p.${b.pages}${b.total_pages?'/'+b.total_pages:''}`,b.percent!=null?h('div',{class:'bar'},h('i',{style:`width:${b.percent}%`})):null]:(b.rating?'★ '+b.rating:'')),
    h('td',{},Object.entries(b.services).map(([k,v])=>h('span',{class:'chip '+v.state,title:(LAB[v.state]||v.state)+(v.error?': '+v.error:'')},(svcLabels[k]||k)+(v.state==='linked'?'':' · '+LAB[v.state])))))};
@@ -406,7 +408,7 @@ async function books(){const m=$('#main'),tok=tabToken;
  async function load(mode){try{
   const off=mode==='more'?loaded:0,limit=mode==='refresh'?Math.min(200,Math.max(50,loaded)):50;
   if(mode==='refresh'&&loaded>200)return;
-  const p=new URLSearchParams({q:bq.q,status:bq.status,problems:bq.flag==='nomatch'?'nomatch':bq.flag==='any'?'1':'0',offset:off,limit});const r=await api('/api/books?'+p);if(tok!==tabToken)return;
+  const p=new URLSearchParams({q:bq.q,status:bq.status,problems:bq.flag==='nomatch'?'nomatch':bq.flag==='back'?'back':bq.flag==='any'?'1':'0',offset:off,limit});const r=await api('/api/books?'+p);if(tok!==tabToken)return;
   if(mode==='more'){r.books.forEach(b=>tbody.append(rowFor(b)));loaded+=r.books.length;sig='';more(r.total);return}
   const sg=sigOf([r.total,r.books]);if(mode==='refresh'&&sg===sig)return;sig=sg;loaded=r.books.length;
   if(!r.total){tbody=null;out.replaceChildren(h('p',{class:'mut'},bq.flag?'Nothing flagged. ':'No books match. If this is empty, use Dashboard → Refresh library.'));return}
@@ -426,8 +428,16 @@ async function openBook(id){const md=$('#modal');const flash={};let cover=null,p
   h('div',{class:'row',style:'flex-wrap:nowrap'},h('img',{id:'hccover',class:'cover',alt:'',referrerpolicy:'no-referrer',src:cover||'data:image/gif;base64,R0lGODlhAQABAAAAACw='}),h('div',{class:'grow'},h('h2',{style:'margin:0'},b.title),h('div',{class:'mut'},b.authors.join(', '))),h('button',{class:'btn',onclick:()=>{closeModal()}},'Close')),
   h('p',{class:'small'},h('a',{href:`/api/book/${b.id}/hardcover`,target:'_blank',rel:'noopener noreferrer'},'Hardcover ↗'),': ',h('b',{},b.status||'—'),b.listened?` · ${hm(b.listened[0])} of ${hm(b.listened[1])} listened (${b.percent}%)`:b.pages!=null?` · page ${b.pages}${b.total_pages?' of '+b.total_pages:''}`:'',b.rating?` · rated ${b.rating}`:'',b.finished_on?` · finished ${b.finished_on}`:''),
   h('div',{class:'row',style:'margin:6px 0'},h('button',{class:'btn pri',onclick:async e=>{e.target.disabled=true;try{const r=await api(`/api/book/${b.id}/push-all`,{});pushAll=r.results;draw(r.book)}catch(x){pushAll=[{label:'Error',ok:false,error:x.message}];draw(b)}}},'Push to all services'),h('span',{class:'small mut'},'sends this book’s current status, progress and rating everywhere')),
+  b.back?backBox(b):null,
   pushAll?h('div',{class:'msg small'},pushAll.map(r=>h('div',{},(r.ok?'✓ ':'✗ ')+r.label+': '+(r.ok?(r.pushed?`pushed ${r.pushed} update(s)`:(r.linked?'nothing needed pushing':'no match found yet')):r.error)))):null,
   Object.entries(b.services).map(([k,v])=>svc(b,k,v)))))}
+ function backBox(b){const x=b.back,f=(v,u)=>u==='percent'?v+'%':'page '+v,res=h('div');
+  const go=async(send,e)=>{e.target.disabled=true;try{const r=await api(`/api/book/${b.id}/progress-back`,{send});pushAll=send?r.results.map(y=>({label:y.label,ok:y.ok,pushed:y.pushed,linked:true,error:y.error})):[{label:'Kept',ok:true,pushed:0,linked:true}];draw(r.book)}catch(err){note(res,err.message,'bad');e.target.disabled=false}};
+  return h('div',{class:'msg warn',style:'margin:8px 0'},h('b',{},'↩ Progress went backwards'),
+   h('div',{class:'small'},`Hardcover now says ${f(x.to,x.unit)}; your services were last sent ${f(x.from,x.from_unit)}. That can happen when an app resets its position, so it hasn't been sent. Is ${f(x.to,x.unit)} right?`),
+   h('div',{class:'row',style:'margin-top:6px'},h('button',{class:'btn small pri',onclick:e=>go(true,e)},`Yes, send ${f(x.to,x.unit)}`),
+    h('button',{class:'btn small',onclick:e=>go(false,e)},'No, keep my services’ progress')),
+   h('div',{class:'small mut'},'If it’s wrong, fix it in the app that reset it. When Hardcover moves on, syncing carries on as normal.'),res)}
  function svc(b,k,v){const box=h('div',{class:'svc'}),res=h('div'),pick=h('div');if(flash[k]){note(res,flash[k].t,flash[k].c);delete flash[k]}
   const act=async(path,body,after)=>{try{const r=await api(path,body);if(after)after(r);else draw(r)}catch(e){note(res,e.message,'bad')}};
   put(box,h('div',{class:'row'},homeIcon({key:k,label:svcLabels[k]||k,home:svcHome[k]},20),h('b',{},svcLabels[k]||k),h('span',{class:'chip '+v.state},LAB[v.state]||v.state),v.manual?h('span',{class:'small mut'},'(manual link)'):null,

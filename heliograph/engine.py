@@ -194,9 +194,26 @@ class Engine(BookOrbitJobs):
             return c["sync_paused_dnf"] and p.supports(status)
         return status in ("reading", "read")
 
+    @staticmethod
+    def unit(b):
+        """What b.position counts: "percent" for audiobooks timed in Hardcover, else "page"."""
+        return "percent" if b.timed else "page"
+
+    @staticmethod
+    def as_percent(value, unit, b):
+        if value is None:
+            return None
+        if unit == "percent":
+            return value
+        return value * 100 / b.total_pages if b.total_pages else None
+
+    def _same_unit(self, b, st):
+        return (st.get("unit") or self.unit(b)) == self.unit(b)    # links from before 0.6.4 have no unit: as now
+
     def _progress_due(self, b, st, status_changed, now):
         pos = b.position                         # pages, or percent for audiobooks timed in Hardcover
-        if b.status != "reading" or pos is None or pos == st["pages"]:
+        same = self._same_unit(b, st)
+        if b.status != "reading" or pos is None or (pos == st["pages"] and same):
             return False
         if pos == 0 and not st["pages"]:
             return False                         # nothing read yet
@@ -207,11 +224,55 @@ class Engine(BookOrbitJobs):
             return False
         if st["pages"] is None:
             return True
+        if not same:                             # switched between ebook/print (pages) and audiobook (percent)
+            was, now_pct = self.as_percent(st["pages"], st["unit"], b), self.as_percent(pos, self.unit(b), b)
+            if was is None or now_pct is None:
+                return True
+            return abs(now_pct - was) >= c["progress_step_percent"]
         if b.timed:
             return abs(pos - st["pages"]) >= c["progress_step_percent"]
         if c["progress_mode"] == "percent" and b.total_pages:
             return abs(pos - st["pages"]) * 100 / b.total_pages >= c["progress_step_percent"]
         return abs(pos - st["pages"]) >= c["progress_step_pages"]
+
+    def went_back(self, b, st):
+        """(from, its unit) if this progress is further back than what was last sent, by at least the progress step;
+        else None. A re-read (read -> reading) isn't going back."""
+        old, new = st["pages"], b.position
+        if old is None or new is None or b.status != "reading" or st["status"] != "reading":
+            return None
+        c, ou, nu = self.common, st.get("unit") or self.unit(b), self.unit(b)
+        if ou == nu and nu == "page" and not (c["progress_mode"] == "percent" and b.total_pages):
+            drop, step = old - new, c["progress_step_pages"]
+        else:
+            o, n = self.as_percent(old, ou, b), self.as_percent(new, nu, b)
+            if o is None or n is None:
+                return None
+            drop, step = o - n, c["progress_step_percent"]
+        return (old, ou) if drop > 0 and drop >= step else None
+
+    def _held_back(self, b, p, st, dry):
+        """True: don't send this progress yet. It's further back than what the service has, and you haven't said to
+        send it (Books -> Progress went back). Anything else about the book still goes out."""
+        try:
+            held = json.loads(st.get("held") or "null") or None
+        except ValueError:
+            held = None
+        back = self.went_back(b, st)
+        if not back:
+            if held and not dry:
+                self.state.save_link(b.ub_id, p.key, held=None)
+            return False
+        pos, unit = b.position, self.unit(b)
+        if held and held.get("to") == pos and held.get("unit") == unit:
+            return not held.get("ok")            # you said send it -> go; otherwise still waiting (or you said keep)
+        if not dry:
+            self.state.save_link(b.ub_id, p.key, held=json.dumps(
+                {"to": pos, "unit": unit, "from": back[0], "from_unit": back[1], "at": time.time()}))
+        fmt = lambda v, u: f"{v}%" if u == "percent" else f"p.{v}"
+        self.log.warning("%s: '%s' progress went back on Hardcover, from %s to %s. Not sent: confirm it on the Books "
+                         "tab (Progress went back) if it's right", p.label, b.title, fmt(*back), fmt(pos, unit))
+        return True
 
     def _note(self, b, p, error, now, dry=None):
         if not (self.dry if dry is None else dry):
@@ -231,13 +292,15 @@ class Engine(BookOrbitJobs):
         rsig = self.review_sig(b) if c.get("sync_reviews") and p.supports_reviews else None
         if baseline:
             if not dry:
-                self.state.save_link(b.ub_id, p.key, status=b.status, pages=b.position, rating=b.rating, pushed_at=now,
+                self.state.save_link(b.ub_id, p.key, status=b.status, pages=b.position, unit=self.unit(b), rating=b.rating, pushed_at=now,
                                      **({"review": rsig} if rsig else {}))
             return 0
         if st["skip"] or not b.status or not self._allowed(p, b.status):
             return 0
         status_changed = st["status"] != b.status
         progress_changed = p.tracks_progress and self._progress_due(b, st, status_changed, now)
+        if progress_changed and not status_changed and self._held_back(b, p, st, dry):
+            progress_changed = False
         rating_changed = bool(c["sync_ratings"] and b.status == "read" and b.rating and b.rating != st["rating"])
         review_changed = bool(rsig and st.get("review") not in (rsig, "kept:" + rsig))
         if not (status_changed or progress_changed or rating_changed or review_changed):
@@ -268,7 +331,7 @@ class Engine(BookOrbitJobs):
                               f"{b.percent}% ({b.seconds // 60} of {b.total_seconds // 60} min)" if b.timed else f"{b.percent}%")
                 if not dry:
                     p.set_progress(rid, b, by_pages, rpages)
-                done += 1; upd["pages"] = b.position
+                done += 1; upd.update(pages=b.position, unit=self.unit(b), held=None)
             if rating_changed:
                 self.log.info("%s%s: '%s' rated %s", tag, p.label, b.title, b.rating)
                 if not dry:
@@ -277,7 +340,7 @@ class Engine(BookOrbitJobs):
             if review_changed:
                 done += self._sync_review(b, p, rid, st, rsig, upd, dry, tag)
             if b.status == "read":
-                upd["pages"] = b.position
+                upd.update(pages=b.position, unit=self.unit(b), held=None)
             if done:
                 upd["pushed_at"] = now
             upd.update(error=None, error_at=0)
@@ -468,7 +531,8 @@ class Engine(BookOrbitJobs):
             self.state.upsert_book(b, time.time())
             if not b.status or not self._allowed(p, b.status):
                 raise ValueError(f"Nothing to send: '{b.status}' books aren't synced to {p.label} (see Settings)")
-            self.state.save_link(ub_id, key, status=None, pages=None, rating=None, pushed_at=0, link_failed_at=0)
+            self.state.save_link(ub_id, key, status=None, pages=None, unit=None, held=None, rating=None, pushed_at=0,
+                                 link_failed_at=0)
             self._problems = 0
             n = self._sync(b, p, False, set())
             st = self.state.link(ub_id, key)
@@ -479,6 +543,52 @@ class Engine(BookOrbitJobs):
             b = self.state.get_book(ub_id)
             self._covers[ub_id] = self.hc().cover_url(b) if b else None
         return self._covers[ub_id]
+
+    def held_back(self):
+        """{ub_id: {service: held}}: progress that went backwards, waiting for you (not the ones you said to keep)."""
+        out = {}
+        for ub, links in self.state.links_by_book().items():
+            for key, l in links.items():
+                try:
+                    h = json.loads(l.get("held") or "null")
+                except ValueError:
+                    h = None
+                if h and not h.get("keep") and not h.get("ok"):
+                    out.setdefault(ub, {})[key] = h
+        return out
+
+    def resolve_back(self, ub_id, send):
+        """Progress went back for this book: send=True sends it to the services now; False keeps theirs (until
+        Hardcover's progress changes again)."""
+        held = self.held_back().get(ub_id)
+        if not held:
+            raise ValueError("Nothing is waiting for this book")
+        for key, h in held.items():
+            self.state.save_link(ub_id, key, held=json.dumps(dict(h, **({"ok": True} if send else {"keep": True}))))
+        if not send:
+            b = self.state.get_book(ub_id)
+            self.log.info("'%s': kept your services' progress; the lower one on Hardcover wasn't sent", b.title if b else ub_id)
+            return []
+        b = self.hc().fetch_one(ub_id)
+        if not b:
+            raise KeyError("book not found on Hardcover")
+        self.state.upsert_book(b, time.time())
+        results = []
+        for key in held:
+            p = self.provider(key)
+            if not p or not p.enabled:
+                continue
+            r = {"service": key, "label": p.label}
+            try:
+                with self.busy(key, why="sending progress you confirmed"):
+                    self._problems = 0
+                    r["pushed"] = self._sync(b, p, False, set())
+                st = self.state.link(ub_id, key)
+                r.update(ok=not st["error"], error=st["error"])
+            except Busy as e:
+                r.update(ok=False, error=str(e))
+            results.append(r)
+        return results
 
     def push_all(self, ub_id):
         """Push one book's current status/progress/rating to every enabled service."""
