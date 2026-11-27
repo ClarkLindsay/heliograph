@@ -121,6 +121,10 @@ class Engine(BookOrbitJobs):
             self.refresh_profile_links()
             self.bookorbit_ebooks()
             try:
+                self.sync_owned()
+            except Exception as e:
+                self.log.warning("Couldn't check your Hardcover Owned list: %s", e)
+            try:
                 self.bookorbit_owned_auto()
             except Exception as e:
                 self.log.warning("BookOrbit: couldn't start marking books as owned: %s", e)
@@ -547,6 +551,82 @@ class Engine(BookOrbitJobs):
             b = self.state.get_book(ub_id)
             self._covers[ub_id] = self.hc().cover_url(b) if b else None
         return self._covers[ub_id]
+
+    # ---- owned: your Hardcover Owned list -> "owned" on the services that have it
+    def owned_providers(self):
+        return [p for p in self.providers if p.enabled and getattr(p, "supports_owned", False)]
+
+    def sync_owned(self):
+        """After each cycle: books on your Hardcover Owned list get marked owned on the services; a book you take off
+        the list is unmarked where Heliograph marked it. Runs in the background (a first run can be long)."""
+        if self.dry or not self.common.get("sync_owned", True):
+            return
+        t = getattr(self, "_owned_thread", None)
+        if t and t.is_alive():
+            return
+        provs = self.owned_providers()
+        if not provs:
+            return
+        _, have = self.hc().owned_list()
+        try:
+            prev = json.loads(self.state.get("hc_owned") or "null")
+        except ValueError:
+            prev = None
+        self._owned_thread = threading.Thread(target=self._sync_owned, args=(set(have), prev, provs), daemon=True,
+                                              name="owned-sync")
+        self._owned_thread.start()
+
+    def _sync_owned(self, owned, prev, provs):
+        books = {b.book_id: b for b in self.state.books() if b.book_id}
+        done, ours, dead, retry = self._owned_done(), self._owned_done("owned_ours"), set(), set()
+        gone = (set(prev) - owned) if prev is not None else set()      # first run: nothing counts as taken off
+
+        def each(b, want):
+            for p in provs:
+                if p.key in dead:
+                    retry.add(b.book_id); continue
+                l = self.state.link(b.ub_id, p.key)
+                if l["skip"] or not l["remote_id"]:
+                    continue
+                key = f"{p.key}|{l['remote_id']}"
+                if (key in done) == want:
+                    continue
+                if not want and key not in ours:           # marked owned by you, not Heliograph: left alone
+                    done.discard(key)
+                    self.state.set("owned_marked", json.dumps(sorted(done)))
+                    continue
+                try:
+                    with self.busy(p.key, timeout=120, why="syncing owned books"):
+                        changed = p.set_owned(l["remote_id"], b, want)
+                    if want:
+                        done.add(key)
+                        if changed:
+                            ours.add(key)
+                    else:
+                        done.discard(key); ours.discard(key)
+                    self.state.set("owned_marked", json.dumps(sorted(done)))
+                    self.state.set("owned_ours", json.dumps(sorted(ours)))
+                    if changed:
+                        self.log.info("%s: '%s' %s", p.label, b.title, "marked as owned (it's on your Hardcover Owned list)"
+                                      if want else "no longer marked as owned (taken off your Hardcover Owned list)")
+                except AuthError as e:
+                    dead.add(p.key); retry.add(b.book_id)
+                    self.log.error("%s: %s - owned books will be retried next cycle", p.label, e)
+                except Exception as e:
+                    retry.add(b.book_id)
+                    self.log.warning("%s: couldn't %s '%s': %s", p.label, "mark as owned" if want else "unmark as owned", b.title, e)
+
+        try:
+            for i in owned:
+                if i in books:
+                    each(books[i], True)
+            for i in gone:
+                if i in books:
+                    each(books[i], False)
+            # a book whose unmarking failed stays "seen on the list", so the next run tries again
+            self.state.set("hc_owned", json.dumps(sorted(owned | (gone & retry))))
+        except Exception as e:
+            self.log.error("Syncing owned books failed: %s", e)
 
     def held_back(self):
         """{ub_id: {service: held}}: progress that went backwards, waiting for you (not the ones you said to keep)."""

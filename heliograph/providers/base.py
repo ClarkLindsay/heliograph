@@ -149,8 +149,9 @@ class Provider:
     def set_review(self, remote_id, text, spoilers, book): raise NotImplementedError
 
     supports_owned = False                                               # the service can mark a book "owned"
-    def set_owned(self, remote_id, book):
-        """Mark the book as one you own. -> True if it changed, False if it was already marked. Verifies."""
+    def set_owned(self, remote_id, book, owned=True):
+        """Mark the book as one you own (owned=False: no longer). -> True if it changed, False if it already was.
+        Verifies."""
         raise NotImplementedError
 
     def finalize(self, cand):

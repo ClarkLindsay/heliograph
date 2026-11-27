@@ -67,7 +67,7 @@ SPEC = {
         ("api_key", "API key (BookOrbit → Settings → API keys)", "secret"),
         ("auto_ebook", "When you add an ebook to an audiobook you haven't read yet, switch its Hardcover edition to the ebook", "bool"),
         ("from_hardcover", "Copy your Hardcover star ratings and reviews into BookOrbit (Hardcover is the source)", "bool"),
-        ("mark_owned", "Your BookOrbit books are copies you own: mark them as owned on Goodreads, StoryGraph and Pagebound (and books you add later, every 6 hours)", "bool")]),
+        ("mark_owned", "Your BookOrbit books are copies you own: add them to your Hardcover Owned list and mark them as owned on Goodreads, StoryGraph and Pagebound (and books you add later, every 6 hours)", "bool")]),
     "common": ("Sync behaviour", [
         ("poll_interval_minutes", "Poll Hardcover every (minutes)", "int"),
         ("min_update_interval_seconds", "Min seconds between progress updates", "int"),
@@ -82,6 +82,7 @@ SPEC = {
         ("sync_paused_dnf", "Sync Paused / Did Not Finish", "bool"),
         ("sync_ratings", "Sync ratings when marked Read", "bool"),
         ("sync_reviews", "Sync reviews: your Hardcover review goes to Goodreads, StoryGraph, Fable and Pagebound", "bool"),
+        ("sync_owned", "Sync owned books: books on your Hardcover Owned list are marked as owned on Goodreads, StoryGraph and Pagebound (taking one off the list unmarks it where Heliograph marked it)", "bool"),
         ("overwrite_reviews", "…even replacing a different review you wrote on a service yourself (off: that one is left alone)", "bool"),
         ("remove_from_services", "When you remove a book from Hardcover, also remove it from your services "
                                  "(off / want = only Want to Read books / all = any status, deletes ratings and reviews there too)",

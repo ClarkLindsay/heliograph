@@ -212,23 +212,25 @@ class StoryGraph(Provider):
 
     supports_owned = True
 
-    def set_owned(self, remote_id, book):
+    def set_owned(self, remote_id, book, owned=True):
+        mark, unmark = f"/mark-as-owned?book_id={remote_id}", f"/remove-owned-book?book_id={remote_id}"
         page = self._req("GET", f"/books/{remote_id}")
         if page.status_code != 200:
             raise ProviderError(f"StoryGraph: book page HTTP {page.status_code}")
-        if f"/remove-owned-book?book_id={remote_id}" in page.text:
+        has, wanted = (unmark in page.text), (unmark if owned else mark)
+        if has == bool(owned):
             return False
-        if f"/mark-as-owned?book_id={remote_id}" not in page.text:
-            raise ProviderError("StoryGraph: no 'Mark as owned' on the book page")
+        if (mark if owned else unmark) not in page.text:
+            raise ProviderError("StoryGraph: no owned button on the book page")
         csrf = _csrf(page.text)
         if not csrf:
             raise ProviderError("StoryGraph: CSRF token not found")
-        r = self._req("POST", f"/mark-as-owned?book_id={remote_id}", data={"authenticity_token": csrf},
+        r = self._req("POST" if owned else "DELETE", mark if owned else unmark, data={"authenticity_token": csrf},
                       headers=self._xhr(remote_id, csrf))
         if r.status_code != 200 or r.sign_in_redirect:
-            raise ProviderError(f"StoryGraph mark as owned -> HTTP {r.status_code}")
-        if f"/remove-owned-book?book_id={remote_id}" not in self._req("GET", f"/books/{remote_id}").text:
-            raise ProviderError("StoryGraph didn't keep the book as owned")
+            raise ProviderError(f"StoryGraph {'mark as' if owned else 'remove from'} owned -> HTTP {r.status_code}")
+        if wanted not in self._req("GET", f"/books/{remote_id}").text:
+            raise ProviderError("StoryGraph didn't keep the change to owned")
         return True
 
     def _xhr(self, rid, csrf):

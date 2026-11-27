@@ -293,11 +293,20 @@ def test_set_aside_a_book_hardcover_doesnt_have():
             bo.HardcoverLookup = orig
 
 
-def test_mark_bookorbit_books_as_owned():
+class OwnedHC(NoLib):
+    """A Hardcover account with an Owned list."""
+    def __init__(self, books=(), owned=()):
+        super().__init__(books); self.owned, self.adds = set(owned), []
+    def owned_list(self): return 1, {i: 100 + i for i in self.owned}
+    def add_owned(self, book_id, edition_id=None):
+        if book_id in self.owned: return False
+        self.owned.add(book_id); self.adds.append(book_id); return True
+
+
+def owned_setup(tmp, books, owned=()):
     from heliograph.config import Config
     from heliograph.engine import Engine
-    from heliograph.hardcover import Book
-    from heliograph.providers.base import Provider, AuthError
+    from heliograph.providers.base import Provider
     from heliograph.state import State
 
     class Owns(Provider):
@@ -306,11 +315,37 @@ def test_mark_bookorbit_books_as_owned():
             self.key, self.label = key, label
             super().__init__(cfg, log)
             self.calls, self.owned, self.fail = [], set(), None
-        def set_owned(self, rid, b):
-            self.calls.append(rid)
+        def set_owned(self, rid, b, owned=True):
+            self.calls.append(rid if owned else "-" + rid)
             if self.fail: raise self.fail
-            if rid in self.owned: return False
-            self.owned.add(rid); return True
+            if (rid in self.owned) == owned: return False
+            (self.owned.add if owned else self.owned.discard)(rid); return True
+
+    cfg = Config(os.path.join(tmp, "c.json"))
+    cfg["bookorbit"].update(url="http://bo", api_key="k")
+    for k in ("goodreads", "storygraph", "fable"):
+        cfg[k]["enabled"] = True
+    log = logging.getLogger("t")
+    gr, sg = Owns(cfg, log, "goodreads", "Goodreads"), Owns(cfg, log, "storygraph", "StoryGraph")
+    plain = Owns(cfg, log, "fable", "Fable"); plain.supports_owned = False
+    hc = OwnedHC(books, owned)
+    eng = Engine(cfg, [gr, sg, plain], State(os.path.join(tmp, "s.db")), log, hardcover=hc)
+    for x in books:
+        eng.state.upsert_book(x, time.time())
+    return eng, hc, gr, sg, plain
+
+
+def wait(eng, attr):
+    for _ in range(200):
+        t = getattr(eng, attr, None)
+        if not (t.get("running") if isinstance(t, dict) else (t and t.is_alive())):
+            return
+        time.sleep(0.02)
+
+
+def test_mark_bookorbit_books_as_owned():
+    from heliograph.hardcover import Book
+    from heliograph.providers.base import AuthError
 
     class Client:
         def books(self): return [book(1, "Dune", ["Frank Herbert"], ["epub"], hardcoverId="dune"),
@@ -318,46 +353,60 @@ def test_mark_bookorbit_books_as_owned():
                                  book(3, "Not on Hardcover", ["X"], ["epub"])]
 
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
-        cfg = Config(os.path.join(tmp, "c.json"))
-        cfg["bookorbit"].update(url="http://bo", api_key="k")
-        for k in ("goodreads", "storygraph"):
-            cfg[k]["enabled"] = True
-        log = logging.getLogger("t")
-        gr, sg = Owns(cfg, log, "goodreads", "Goodreads"), Owns(cfg, log, "storygraph", "StoryGraph")
-        plain = Owns(cfg, log, "fable", "Fable"); plain.supports_owned = False; cfg["fable"]["enabled"] = True
-        dune, emma = Book(10, "Dune", status="read", slug="dune"), Book(12, "Emma", status="want", book_id=42)
-        eng = Engine(cfg, [gr, sg, plain], State(os.path.join(tmp, "s.db")), log, hardcover=NoLib([dune, emma]))
+        dune = Book(10, "Dune", status="read", slug="dune", book_id=7, edition_id=70)
+        emma = Book(12, "Emma", status="want", book_id=42)
+        eng, hc, gr, sg, plain = owned_setup(tmp, [dune, emma], owned=[42])        # Emma's already on the Owned list
         eng.bookorbit = lambda: Client()
-        for b in (dune, emma):
-            eng.state.upsert_book(b, time.time())
         eng.state.save_link(10, "goodreads", remote_id="G10"); eng.state.save_link(10, "storygraph", remote_id="S10")
         eng.state.save_link(10, "fable", remote_id="F10")
         eng.state.save_link(12, "goodreads", remote_id="G12")      # Emma: not linked on StoryGraph yet
         sg.owned.add("S10")                                       # already owned there
-        eng.start_bookorbit_owned()
-        for _ in range(100):
-            if not eng.own_job["running"]: break
-            time.sleep(0.05)
+        eng.start_bookorbit_owned(); wait(eng, "own_job")
         j = eng.own_job
+        assert hc.adds == [7], hc.adds                            # Hardcover's Owned list first
         assert sorted(gr.calls) == ["G10", "G12"] and sg.calls == ["S10"] and plain.calls == [], (gr.calls, sg.calls)
-        assert (j["marked"], j["already"], j["not_linked"], j["not_in_hardcover"], j["failed"]) == (2, 1, 1, 1, 0), j
+        assert (j["marked"], j["already"], j["not_linked"], j["not_in_hardcover"], j["failed"]) == (3, 2, 1, 1, 0), j
         # a second run asks nobody again
         gr.calls.clear(); sg.calls.clear()
-        eng.start_bookorbit_owned()
-        for _ in range(100):
-            if not eng.own_job["running"]: break
-            time.sleep(0.05)
-        assert gr.calls == [] and sg.calls == [] and eng.own_job["already"] == 3
+        eng.start_bookorbit_owned(); wait(eng, "own_job")
+        assert gr.calls == [] and sg.calls == [] and eng.own_job["already"] == 5
         # a dead session stops that service, the others carry on
         eng.state.set("owned_marked", "[]"); gr.owned.clear(); gr.fail = AuthError("cookies expired")
-        eng.start_bookorbit_owned()
-        for _ in range(100):
-            if not eng.own_job["running"]: break
-            time.sleep(0.05)
+        eng.start_bookorbit_owned(); wait(eng, "own_job")
         assert len(gr.calls) == 1 and eng.own_job["failed"] == 1 and sg.calls == ["S10"], (gr.calls, eng.own_job)
         # the setting: off -> nothing starts on its own
         eng.state.set("owned_checked_at", "0"); eng.bookorbit_owned_auto()
         assert not eng.own_job["running"]
+
+
+def test_hardcover_owned_list_syncs_to_services():
+    from heliograph.hardcover import Book
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        dune = Book(10, "Dune", status="read", book_id=7)
+        emma = Book(12, "Emma", status="want", book_id=42)
+        eng, hc, gr, sg, plain = owned_setup(tmp, [dune, emma], owned=[7])
+        for ub, k, rid in ((10, "goodreads", "G10"), (10, "storygraph", "S10"), (10, "fable", "F10"),
+                           (12, "goodreads", "G12"), (12, "storygraph", "S12")):
+            eng.state.save_link(ub, k, remote_id=rid)
+        gr.owned.add("G12")                                       # you marked Emma owned on Goodreads yourself
+        eng.sync_owned(); wait(eng, "_owned_thread")
+        assert gr.calls == ["G10"] and sg.calls == ["S10"] and plain.calls == []
+        gr.calls.clear(); sg.calls.clear()
+        eng.sync_owned(); wait(eng, "_owned_thread")
+        assert gr.calls == [] and sg.calls == []                   # remembered: nothing asked again
+        hc.owned = {42}                                           # Dune off the list, Emma on
+        eng.sync_owned(); wait(eng, "_owned_thread")
+        assert sorted(gr.calls) == ["-G10", "G12"] and sorted(sg.calls) == ["-S10", "S12"], (gr.calls, sg.calls)
+        assert "G12" in gr.owned and "G10" not in gr.owned
+        hc.owned = set(); gr.calls.clear(); sg.calls.clear()
+        eng.sync_owned(); wait(eng, "_owned_thread")
+        # Emma comes off too: unmarked where Heliograph marked it (StoryGraph); on Goodreads you'd marked it
+        # yourself before it was ever on the list, so it's left as you set it
+        assert sorted(sg.calls) == ["-S12"] and gr.calls == [] and "G12" in gr.owned, (gr.calls, sg.calls)
+        eng.config["common"]["sync_owned"] = False
+        hc.owned = {7}; gr.calls.clear()
+        eng.sync_owned(); wait(eng, "_owned_thread")
+        assert gr.calls == []                                     # the setting off: nothing
 
 
 def test_ratings_and_reviews_from_hardcover():
@@ -519,7 +568,7 @@ def test_books_you_have_read_keep_your_hardcover_edition():
             bo.HardcoverLookup = orig
 
 
-ALL = [test_mark_bookorbit_books_as_owned, test_your_library_record_of_a_book_wins, test_books_you_have_read_keep_your_hardcover_edition, test_ratings_and_reviews_from_hardcover, test_set_aside_a_book_hardcover_doesnt_have, test_kind_and_edition_rules, test_plan_book, test_engine_scan_apply_and_ebook_switch,
+ALL = [test_hardcover_owned_list_syncs_to_services, test_mark_bookorbit_books_as_owned, test_your_library_record_of_a_book_wins, test_books_you_have_read_keep_your_hardcover_edition, test_ratings_and_reviews_from_hardcover, test_set_aside_a_book_hardcover_doesnt_have, test_kind_and_edition_rules, test_plan_book, test_engine_scan_apply_and_ebook_switch,
        test_scan_pauses_at_hardcovers_daily_limit, test_parse_ref, test_find_on_hardcover_and_paste,
        test_apply_uses_a_ticked_suggestion_and_hardcover_url]
 

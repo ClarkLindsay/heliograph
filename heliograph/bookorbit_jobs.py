@@ -32,11 +32,21 @@ class BookOrbitJobs:
             pass
 
     # ---- your BookOrbit books are copies you own: say so on every service that can
-    def _owned_done(self):
+    def _owned_done(self, which="owned_marked"):
+        """"service|remote id" sets: owned_marked = known to be marked owned there; owned_ours = marked by
+        Heliograph (only those are ever unmarked: one you marked yourself is never touched)."""
         try:
-            return set(json.loads(self.state.get("owned_marked") or "[]"))     # "service|remote id" already marked
+            return set(json.loads(self.state.get(which) or "[]"))
         except ValueError:
             return set()
+
+    def _owned_mark(self, key, changed):
+        done, ours = self._owned_done(), self._owned_done("owned_ours")
+        done.add(key)
+        if changed:
+            ours.add(key)
+        self.state.set("owned_marked", json.dumps(sorted(done)))
+        self.state.set("owned_ours", json.dumps(sorted(ours)))
 
     def start_bookorbit_owned(self):
         if self.own_job.get("running"):
@@ -61,8 +71,9 @@ class BookOrbitJobs:
     def _bo_owned(self, client):
         job, done = self.own_job, self._owned_done()
         try:
-            by = {}
+            by, lib = {}, {}
             for b in self.hc().fetch_library():
+                lib[b.ub_id] = b
                 for k in (b.slug, b.book_id):
                     if k:
                         by[str(k)] = b.ub_id
@@ -74,8 +85,24 @@ class BookOrbitJobs:
                 else:
                     missing += 1                     # not in your Hardcover library, so not on your services either
             job["not_in_hardcover"] = missing
-            provs = [p for p in self.providers if p.enabled and getattr(p, "supports_owned", False)]
-            job["services"] = [p.label for p in provs]
+            provs = self.owned_providers()
+            job["services"] = ["Hardcover"] + [p.label for p in provs]
+            # Hardcover's Owned list first: it's what Hardcover shows, and the source "Sync owned books" follows
+            _, on_list = self.hc().owned_list()
+            for ub, title in ubs.items():
+                b = lib[ub]
+                if not b.book_id:
+                    continue
+                if b.book_id in on_list:
+                    job["already"] += 1
+                    continue
+                try:
+                    if self.hc().add_owned(b.book_id, b.edition_id):
+                        job["marked"] += 1
+                        self.log.info("Hardcover: '%s' added to your Owned list (it's in your BookOrbit library)", title)
+                except Exception as e:
+                    job["failed"] += 1
+                    job["errors"].append({"title": title, "service": "Hardcover", "error": str(e)[:200]})
             work = []
             for ub, title in ubs.items():
                 for p in provs:
@@ -104,7 +131,7 @@ class BookOrbitJobs:
                     else:
                         job["already"] += 1
                     done.add(f"{p.key}|{rid}")
-                    self.state.set("owned_marked", json.dumps(sorted(done)))
+                    self._owned_mark(f"{p.key}|{rid}", changed)
                 except AuthError as e:
                     dead.add(p.key)
                     job["failed"] += 1

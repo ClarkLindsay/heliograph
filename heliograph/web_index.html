@@ -228,7 +228,7 @@ function hardcoverTab(){const m=toolMount||$('#main'),tok=tabToken,u={};
 
 /* BookOrbit: the right Hardcover book and edition for every book, so BookOrbit's own Hardcover sync is ready. */
 function ownedCard(tok){const o={msg:h('span',{class:'small'}),bar:h('i'),out:h('div'),errs:h('div',{class:'small'})};
- o.go=h('button',{class:'btn',onclick:async()=>{if(!confirm('Mark every BookOrbit book that is in your Hardcover library as owned on Goodreads, StoryGraph and Pagebound?'))return;
+ o.go=h('button',{class:'btn',onclick:async()=>{if(!confirm('Add every BookOrbit book that is in your Hardcover library to your Hardcover Owned list, and mark it as owned on Goodreads, StoryGraph and Pagebound?'))return;
    try{await api('/api/bookorbit/owned',{});setTimeout(()=>tok===tabToken&&poll(),300)}catch(e){note(o.out,e.message,'bad')}}},'Mark as owned');
  async function poll(){const j=await api('/api/bookorbit/owned');if(tok!==tabToken)return 0;o.go.disabled=!!j.running;
   o.bar.style.width=(j.total?Math.round(100*j.done/j.total):0)+'%';
@@ -238,7 +238,7 @@ function ownedCard(tok){const o={msg:h('span',{class:'small'}),bar:h('i'),out:h(
    (j.errors||[]).slice(0,30).map(x=>h('div',{style:'color:var(--bad)'},`${x.service}: ${x.title}: ${x.error}`)));
   return j.running?1500:0}
  const card=h('div',{class:'card',style:'margin-top:12px'},h('h3',{},'Mark as owned'),
-  h('p',{class:'small mut'},'Your BookOrbit books are copies you own. This marks each one that’s in your Hardcover library as owned on Goodreads (“I own a copy of this edition”), StoryGraph and Pagebound. Nothing else about the book changes. Fable has no way to mark a book as owned. Books already marked are remembered and skipped. To keep up with books you add later, turn on “mark them as owned” in Settings → BookOrbit.'),
+  h('p',{class:'small mut'},'Your BookOrbit books are copies you own. This adds each one that’s in your Hardcover library to your Hardcover Owned list, and marks it as owned on Goodreads (“I own a copy of this edition”), StoryGraph and Pagebound. Nothing else about the book changes. Fable has no way to mark a book as owned. Books already marked are remembered and skipped. To keep up with books you add later, turn on “mark them as owned” in Settings → BookOrbit. Books you put on your Owned list on Hardcover yourself are marked on your services too (Settings → Sync owned books).'),
   h('div',{class:'row'},h('span',{class:'grow'},o.msg),o.go),h('div',{class:'prog'},h('div',{class:'bar'},o.bar)),o.out,o.errs);
  loop(async()=>{try{return await poll()||(tok===tabToken?8000:0)}catch(e){note(o.out,e.message,'bad');return 8000}},tok);
  return card}

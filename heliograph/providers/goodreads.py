@@ -772,17 +772,17 @@ class Goodreads(Provider):
 
     supports_owned = True
 
-    def set_owned(self, remote_id, book):
+    def set_owned(self, remote_id, book, owned=True):
         """Goodreads' "I own a copy of this edition" (the edition Heliograph linked), set in the review editor with
         everything else sent back as it is."""
         edit_url, html, state = self._review_editor(remote_id)
-        if state["is_owned_edition"]:
+        if bool(state["is_owned_edition"]) == bool(owned):
             return False
         action = self._action_id(html, edit_url)
         if not action:
             raise ProviderError("couldn't identify Goodreads' review-save action")
         payload = {"bookId": state["book_id"], "reviewText": state["review_text"], "spoilerStatus": state["spoiler_status"],
-                   "isOwnedEdition": True, "privateNotes": state["private_notes"],
+                   "isOwnedEdition": bool(owned), "privateNotes": state["private_notes"],
                    "postToBlog": state["post_to_blog"], "addToUpdateFeed": state["add_to_feed"],
                    "readingSessions": state["reading_sessions"], "initialReadingSessions": state["reading_sessions"]}
         tree = ('["",{"children":["review",{"children":["edit",{"children":[["id","%s","d"],'
@@ -793,10 +793,10 @@ class Goodreads(Provider):
                                   "Referer": edit_url, "Origin": BASE, "Sec-Fetch-Site": "same-origin",
                                   "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty"})
         if resp.status_code != 200 or not next_action_ok(resp.text):
-            raise ProviderError(f"Goodreads didn't confirm owning it (HTTP {resp.status_code})")
+            raise ProviderError(f"Goodreads didn't confirm the change to owned (HTTP {resp.status_code})")
         after = self._review_editor(remote_id)[2]
-        if not after["is_owned_edition"]:
-            raise ProviderError("Goodreads didn't keep the book as owned")
+        if bool(after["is_owned_edition"]) != bool(owned):
+            raise ProviderError("Goodreads didn't keep the change to owned")
         if after["review_text"] != state["review_text"] or len(after["reading_sessions"]) != len(state["reading_sessions"]):
             raise ProviderError("Goodreads changed the review or reads while marking it owned: check the book")
         return True

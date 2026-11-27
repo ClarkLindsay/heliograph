@@ -42,7 +42,7 @@ DEFAULTS = {
         "api_key": "",               # BookOrbit -> Settings -> API keys
         "auto_ebook": True,          # adding an ebook to an audiobook switches its Hardcover edition to the ebook
         "from_hardcover": True,      # copy your Hardcover star ratings and reviews into BookOrbit
-        "mark_owned": False,         # mark your BookOrbit books as owned on Goodreads, StoryGraph and Pagebound
+        "mark_owned": False,         # your BookOrbit books -> your Hardcover Owned list, and owned on the services
     },
     "web": {
         "enabled": True,
@@ -65,6 +65,7 @@ DEFAULTS = {
         "sync_paused_dnf": False,
         "sync_ratings": True,
         "sync_reviews": False,               # send your Hardcover reviews to the services
+        "sync_owned": True,                  # books on your Hardcover Owned list are marked owned on the services
         "overwrite_reviews": False,          # ...even over a review you wrote there yourself
         "initial_sync": "baseline",          # baseline = record library, push only later changes | import_all
         "verbose_logging": False,

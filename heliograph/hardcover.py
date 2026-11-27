@@ -156,6 +156,31 @@ class HardcoverClient:
     def fetch_library(self):
         return self._books({"user_id": {"_eq": self.user_id}})
 
+    # ---- your "Owned" list: what Hardcover shows as books you own (user_books.owned isn't connected to it)
+    def owned_list(self):
+        """(the Owned list's id, {book id: list_book id}); (None, {}) if your account has no Owned list."""
+        d = self._q("""query { me { lists(where: {slug: {_eq: "owned"}}) { id list_books { id book_id } } } }""")
+        me = d["me"][0] if isinstance(d.get("me"), list) else d.get("me") or {}
+        lst = (me.get("lists") or [None])[0]
+        if not lst:
+            return None, {}
+        return lst["id"], {lb["book_id"]: lb["id"] for lb in lst.get("list_books") or []}
+
+    def add_owned(self, book_id, edition_id=None):
+        """Put a book on your Owned list. -> True if it was added, False if it was already there. Verifies."""
+        list_id, have = self.owned_list()
+        if not list_id:
+            raise HardcoverError("Your Hardcover account has no Owned list")
+        if int(book_id) in have:
+            return False
+        obj = {"list_id": list_id, "book_id": int(book_id)}
+        if edition_id:
+            obj["edition_id"] = int(edition_id)
+        r = self._q("mutation($o: ListBookInput!) { insert_list_book(object: $o) { id } }", {"o": obj})
+        if not (r.get("insert_list_book") or {}).get("id") or int(book_id) not in self.owned_list()[1]:
+            raise HardcoverError("Hardcover didn't add the book to your Owned list")
+        return True
+
     def fetch_reviewed(self):
         return self._books({"user_id": {"_eq": self.user_id}, "has_review": {"_eq": True}})
 
