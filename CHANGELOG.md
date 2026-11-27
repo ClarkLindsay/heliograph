@@ -9,6 +9,10 @@ What changed in each release of Heliograph. Each release's notes on GitHub are t
   (an app that reset its position, say), Heliograph doesn't send it. The book is flagged: a banner on the Dashboard,
   **↩ Progress went back** in the Books filter, and on the book itself **Yes, send it** or **No, keep my services'
   progress**. Starting a re-read isn't counted, and the book's status and rating still sync as usual.
+- **Tools → BookOrbit → Mark as owned:** your BookOrbit books are copies you own, so Heliograph can mark each one
+  that's in your Hardcover library as owned on Goodreads ("I own a copy of this edition"), StoryGraph and Pagebound.
+  Nothing else about the book changes. A new setting under **Settings → BookOrbit** does the same for books you add
+  later (off by default). Fable has no way to mark a book as owned.
 
 ### Fixed
 - **Switching between the audiobook and the ebook** no longer compares a percentage with a page number. Before, going

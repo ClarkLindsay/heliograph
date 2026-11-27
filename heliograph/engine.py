@@ -120,6 +120,10 @@ class Engine(BookOrbitJobs):
                 self.log.error("Checking for books removed from Hardcover failed: %s", e)
             self.refresh_profile_links()
             self.bookorbit_ebooks()
+            try:
+                self.bookorbit_owned_auto()
+            except Exception as e:
+                self.log.warning("BookOrbit: couldn't start marking books as owned: %s", e)
             return n
         except Exception as e:
             self.status["result"] = f"error: {e}"

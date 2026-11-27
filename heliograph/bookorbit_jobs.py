@@ -1,13 +1,17 @@
 """The BookOrbit integration: getting a BookOrbit library's Hardcover links right (the BookOrbit tool), the
-6-hourly ebook switch, and copying Hardcover ratings and reviews into BookOrbit.
+6-hourly ebook switch, copying Hardcover ratings and reviews into BookOrbit, and marking your BookOrbit books as
+owned on the services that can (Goodreads, StoryGraph, Pagebound).
 
 Optional: nothing here runs unless BookOrbit is set up in Settings. The engine inherits these methods; they use its
-state, config, log, Hardcover client and matcher, and never touch the services sync.
+state, config, log, Hardcover client and matcher. The only thing they send to your services is "owned".
 """
 import json, threading, time
 
 from . import bookorbit, smartmatch
 from .hardcover import HardcoverDailyLimit
+from .providers.base import AuthError
+
+OWNED_EVERY = 6 * 3600           # with "mark as owned" on, BookOrbit books added since are marked this often
 
 
 def review_norm(text):
@@ -18,6 +22,7 @@ def review_norm(text):
 class BookOrbitJobs:
     def _bo_init(self):
         self.bo_job = {"running": False}
+        self.own_job = {"running": False}
         self._bo_found = {}                              # BookOrbit book key -> the last Hardcover search you ran for it
         try:                                             # the last scan's list survives a restart
             saved = json.loads(self.state.get("bookorbit_job") or "null")
@@ -25,6 +30,100 @@ class BookOrbitJobs:
                 self.bo_job = dict(saved, running=False)
         except (TypeError, ValueError, AttributeError):
             pass
+
+    # ---- your BookOrbit books are copies you own: say so on every service that can
+    def _owned_done(self):
+        try:
+            return set(json.loads(self.state.get("owned_marked") or "[]"))     # "service|remote id" already marked
+        except ValueError:
+            return set()
+
+    def start_bookorbit_owned(self):
+        if self.own_job.get("running"):
+            raise ValueError("Already marking your BookOrbit books as owned")
+        client = self.bookorbit()
+        self.own_job = {"running": True, "started": time.time(), "finished": 0, "total": 0, "done": 0, "marked": 0,
+                        "already": 0, "failed": 0, "not_linked": 0, "not_in_hardcover": 0, "errors": [],
+                        "services": [], "message": "Reading your BookOrbit and Hardcover libraries..."}
+        threading.Thread(target=self._bo_owned, args=(client,), daemon=True, name="bookorbit-owned").start()
+        return self.own_job
+
+    def bookorbit_owned_auto(self):
+        """With the setting on: every OWNED_EVERY, mark the BookOrbit books added since (the rest are remembered)."""
+        c = self.config["bookorbit"]
+        if not (c.get("url") and c.get("api_key") and c.get("mark_owned")) or self.own_job.get("running"):
+            return
+        if time.time() - float(self.state.get("owned_checked_at") or 0) < OWNED_EVERY:
+            return
+        self.state.set("owned_checked_at", str(time.time()))
+        self.start_bookorbit_owned()
+
+    def _bo_owned(self, client):
+        job, done = self.own_job, self._owned_done()
+        try:
+            by = {}
+            for b in self.hc().fetch_library():
+                for k in (b.slug, b.book_id):
+                    if k:
+                        by[str(k)] = b.ub_id
+            ubs, missing = {}, 0
+            for bo in client.books():
+                ub = by.get(str(bo.get("hardcoverId") or ""))
+                if ub:
+                    ubs[ub] = bo.get("title") or ""
+                else:
+                    missing += 1                     # not in your Hardcover library, so not on your services either
+            job["not_in_hardcover"] = missing
+            provs = [p for p in self.providers if p.enabled and getattr(p, "supports_owned", False)]
+            job["services"] = [p.label for p in provs]
+            work = []
+            for ub, title in ubs.items():
+                for p in provs:
+                    l = self.state.link(ub, p.key)
+                    if l["skip"]:
+                        continue
+                    if not l["remote_id"]:
+                        job["not_linked"] += 1
+                    elif f"{p.key}|{l['remote_id']}" in done:
+                        job["already"] += 1
+                    else:
+                        work.append((ub, title, p, l["remote_id"]))
+            job["total"], dead = len(work), set()
+            job["message"] = f"Marking {len(work)} book(s) as owned..." if work else "Nothing new to mark"
+            for ub, title, p, rid in work:
+                if p.key in dead:
+                    job["done"] += 1
+                    continue
+                b = self.state.get_book(ub)
+                try:
+                    with self.busy(p.key, timeout=120, why="marking your BookOrbit books as owned"):
+                        changed = p.set_owned(rid, b)
+                    if changed:
+                        job["marked"] += 1
+                        self.log.info("%s: '%s' marked as owned (it's in your BookOrbit library)", p.label, title)
+                    else:
+                        job["already"] += 1
+                    done.add(f"{p.key}|{rid}")
+                    self.state.set("owned_marked", json.dumps(sorted(done)))
+                except AuthError as e:
+                    dead.add(p.key)
+                    job["failed"] += 1
+                    job["errors"].append({"title": title, "service": p.label, "error": str(e)[:200]})
+                    self.log.error("%s: %s - stopped marking books as owned there", p.label, e)
+                except Exception as e:
+                    job["failed"] += 1
+                    job["errors"].append({"title": title, "service": p.label, "error": str(e)[:200]})
+                    self.log.warning("%s: couldn't mark '%s' as owned: %s", p.label, title, e)
+                job["done"] += 1
+            job["message"] = (f"Done: {job['marked']} marked as owned, {job['already']} already were"
+                              + (f", {job['failed']} failed" if job["failed"] else ""))
+            if job["marked"] or job["failed"]:
+                self.log.info("Mark as owned: %s", job["message"])
+        except Exception as e:
+            job["message"] = f"Stopped: {e}"
+            self.log.error("Marking BookOrbit books as owned failed: %s", e)
+        finally:
+            job.update(running=False, finished=time.time())
 
     # ---- BookOrbit: right Hardcover book + edition for every book, English, language normalised
     def bookorbit(self):

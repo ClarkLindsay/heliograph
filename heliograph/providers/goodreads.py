@@ -770,6 +770,37 @@ class Goodreads(Provider):
     def get_review(self, remote_id, book):
         return self._review_editor(remote_id)[2]["review_text"] or None
 
+    supports_owned = True
+
+    def set_owned(self, remote_id, book):
+        """Goodreads' "I own a copy of this edition" (the edition Heliograph linked), set in the review editor with
+        everything else sent back as it is."""
+        edit_url, html, state = self._review_editor(remote_id)
+        if state["is_owned_edition"]:
+            return False
+        action = self._action_id(html, edit_url)
+        if not action:
+            raise ProviderError("couldn't identify Goodreads' review-save action")
+        payload = {"bookId": state["book_id"], "reviewText": state["review_text"], "spoilerStatus": state["spoiler_status"],
+                   "isOwnedEdition": True, "privateNotes": state["private_notes"],
+                   "postToBlog": state["post_to_blog"], "addToUpdateFeed": state["add_to_feed"],
+                   "readingSessions": state["reading_sessions"], "initialReadingSessions": state["reading_sessions"]}
+        tree = ('["",{"children":["review",{"children":["edit",{"children":[["id","%s","d"],'
+                '{"children":["__PAGE__",{},null,null]},null,null]}]},null,null]},null,null,true]' % remote_id)
+        resp = self._req("POST", edit_url, data=json.dumps([payload, "/review/edit/[id]"], separators=(",", ":")).encode(),
+                         headers={"Accept": "text/x-component", "Content-Type": "text/plain;charset=UTF-8",
+                                  "Next-Action": action, "Next-Router-State-Tree": quote(tree, safe=""),
+                                  "Referer": edit_url, "Origin": BASE, "Sec-Fetch-Site": "same-origin",
+                                  "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty"})
+        if resp.status_code != 200 or not next_action_ok(resp.text):
+            raise ProviderError(f"Goodreads didn't confirm owning it (HTTP {resp.status_code})")
+        after = self._review_editor(remote_id)[2]
+        if not after["is_owned_edition"]:
+            raise ProviderError("Goodreads didn't keep the book as owned")
+        if after["review_text"] != state["review_text"] or len(after["reading_sessions"]) != len(state["reading_sessions"]):
+            raise ProviderError("Goodreads changed the review or reads while marking it owned: check the book")
+        return True
+
     def set_review(self, remote_id, text, spoilers, book):
         edit_url, html, state = self._review_editor(remote_id)
         action = self._action_id(html, edit_url)

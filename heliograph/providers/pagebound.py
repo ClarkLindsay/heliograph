@@ -272,6 +272,26 @@ class Pagebound(Provider):
         if not (code and 200 <= code < 300):
             raise ProviderError(f"Pagebound status update -> HTTP {code}")
 
+    supports_owned = True
+
+    def set_owned(self, remote_id, book):
+        existing, _ = self._user_book(remote_id)
+        if not existing:
+            raise ProviderError("Pagebound: the book isn't on your shelves")
+        if existing.get("owned"):
+            return False
+        status = STATUS_BY.get(existing.get("status"))
+        if not status:
+            raise ProviderError(f"Pagebound: unknown status {existing.get('status')!r}")
+        body = status_payload(status, existing)          # everything as it is, owned switched on
+        body["user_book"]["owned"] = True
+        code, _d = self._req(f"/api/v1/user_books/{existing['id']}", "PUT", body)
+        if not (code and 200 <= code < 300):
+            raise ProviderError(f"Pagebound mark as owned -> HTTP {code}")
+        if not (self._user_book(remote_id)[0] or {}).get("owned"):
+            raise ProviderError("Pagebound didn't keep the book as owned")
+        return True
+
     def set_progress(self, remote_id, book, by_pages, remote_pages):
         existing, page_count = self._user_book(remote_id)
         if not existing or not (existing.get("reading") or {}).get("id"):

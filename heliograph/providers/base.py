@@ -148,6 +148,11 @@ class Provider:
     def get_review(self, remote_id, book): return None                  # -> your review text there, or None
     def set_review(self, remote_id, text, spoilers, book): raise NotImplementedError
 
+    supports_owned = False                                               # the service can mark a book "owned"
+    def set_owned(self, remote_id, book):
+        """Mark the book as one you own. -> True if it changed, False if it was already marked. Verifies."""
+        raise NotImplementedError
+
     def finalize(self, cand):
         """Hook after a candidate is chosen (e.g. StoryGraph edition resolution). -> Match | None"""
         return Match(cand["id"], cand.get("pages"))

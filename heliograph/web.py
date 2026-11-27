@@ -66,7 +66,8 @@ SPEC = {
         ("web_url", "BookOrbit address in your browser, for “BookOrbit ↗” links (e.g. https://bookorbit.example.com)", "str"),
         ("api_key", "API key (BookOrbit → Settings → API keys)", "secret"),
         ("auto_ebook", "When you add an ebook to an audiobook you haven't read yet, switch its Hardcover edition to the ebook", "bool"),
-        ("from_hardcover", "Copy your Hardcover star ratings and reviews into BookOrbit (Hardcover is the source)", "bool")]),
+        ("from_hardcover", "Copy your Hardcover star ratings and reviews into BookOrbit (Hardcover is the source)", "bool"),
+        ("mark_owned", "Your BookOrbit books are copies you own: mark them as owned on Goodreads, StoryGraph and Pagebound (and books you add later, every 6 hours)", "bool")]),
     "common": ("Sync behaviour", [
         ("poll_interval_minutes", "Poll Hardcover every (minutes)", "int"),
         ("min_update_interval_seconds", "Min seconds between progress updates", "int"),
@@ -635,6 +636,7 @@ def make_handler(hub, cfg, server_log):
                 if path == "/api/removals": return api.e.pending_removals()
                 if path == "/api/hardcover/dates": return dict(api.e.dates_job)
                 if path == "/api/matching": return api.e.matching_status()
+                if path == "/api/bookorbit/owned": return dict(api.e.own_job)
                 if path == "/api/bookorbit": return dict(api.e.bo_job, bo_url=api.cfg["bookorbit"].get("url") or "",
                                                               bo_web=api.cfg["bookorbit"].get("web_url") or "")
                 m = re.fullmatch(r"/api/book/(\d+)", path)
@@ -653,6 +655,7 @@ def make_handler(hub, cfg, server_log):
                 if path == "/api/hardcover/dates/scan": return dict(api._guard(api.e.start_dates_scan))
                 if path == "/api/matching/reset": return api.e.reset_matching()
                 if path == "/api/bookorbit/scan": return dict(api._guard(api.e.start_bookorbit_scan, bool(body.get("full"))))
+                if path == "/api/bookorbit/owned": return dict(api._guard(api.e.start_bookorbit_owned))
                 if path == "/api/bookorbit/apply":
                     keys = body.get("keys")
                     if not isinstance(keys, list) or not all(isinstance(k, str) for k in keys):

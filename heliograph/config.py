@@ -42,6 +42,7 @@ DEFAULTS = {
         "api_key": "",               # BookOrbit -> Settings -> API keys
         "auto_ebook": True,          # adding an ebook to an audiobook switches its Hardcover edition to the ebook
         "from_hardcover": True,      # copy your Hardcover star ratings and reviews into BookOrbit
+        "mark_owned": False,         # mark your BookOrbit books as owned on Goodreads, StoryGraph and Pagebound
     },
     "web": {
         "enabled": True,

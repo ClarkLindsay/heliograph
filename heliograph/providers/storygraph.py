@@ -210,6 +210,27 @@ class StoryGraph(Provider):
             raise ProviderError("StoryGraph: CSRF token not found")
         return info
 
+    supports_owned = True
+
+    def set_owned(self, remote_id, book):
+        page = self._req("GET", f"/books/{remote_id}")
+        if page.status_code != 200:
+            raise ProviderError(f"StoryGraph: book page HTTP {page.status_code}")
+        if f"/remove-owned-book?book_id={remote_id}" in page.text:
+            return False
+        if f"/mark-as-owned?book_id={remote_id}" not in page.text:
+            raise ProviderError("StoryGraph: no 'Mark as owned' on the book page")
+        csrf = _csrf(page.text)
+        if not csrf:
+            raise ProviderError("StoryGraph: CSRF token not found")
+        r = self._req("POST", f"/mark-as-owned?book_id={remote_id}", data={"authenticity_token": csrf},
+                      headers=self._xhr(remote_id, csrf))
+        if r.status_code != 200 or r.sign_in_redirect:
+            raise ProviderError(f"StoryGraph mark as owned -> HTTP {r.status_code}")
+        if f"/remove-owned-book?book_id={remote_id}" not in self._req("GET", f"/books/{remote_id}").text:
+            raise ProviderError("StoryGraph didn't keep the book as owned")
+        return True
+
     def _xhr(self, rid, csrf):
         return {"X-CSRF-Token": csrf, "X-Requested-With": "XMLHttpRequest", "Referer": f"{BASE}/books/{rid}",
                 "Accept": JS_ACCEPT}

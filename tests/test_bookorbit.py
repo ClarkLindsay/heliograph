@@ -293,6 +293,73 @@ def test_set_aside_a_book_hardcover_doesnt_have():
             bo.HardcoverLookup = orig
 
 
+def test_mark_bookorbit_books_as_owned():
+    from heliograph.config import Config
+    from heliograph.engine import Engine
+    from heliograph.hardcover import Book
+    from heliograph.providers.base import Provider, AuthError
+    from heliograph.state import State
+
+    class Owns(Provider):
+        supports_owned = True
+        def __init__(self, cfg, log, key, label):
+            self.key, self.label = key, label
+            super().__init__(cfg, log)
+            self.calls, self.owned, self.fail = [], set(), None
+        def set_owned(self, rid, b):
+            self.calls.append(rid)
+            if self.fail: raise self.fail
+            if rid in self.owned: return False
+            self.owned.add(rid); return True
+
+    class Client:
+        def books(self): return [book(1, "Dune", ["Frank Herbert"], ["epub"], hardcoverId="dune"),
+                                 book(2, "Emma", ["Jane Austen"], ["m4b"], hardcoverId="42"),
+                                 book(3, "Not on Hardcover", ["X"], ["epub"])]
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        cfg = Config(os.path.join(tmp, "c.json"))
+        cfg["bookorbit"].update(url="http://bo", api_key="k")
+        for k in ("goodreads", "storygraph"):
+            cfg[k]["enabled"] = True
+        log = logging.getLogger("t")
+        gr, sg = Owns(cfg, log, "goodreads", "Goodreads"), Owns(cfg, log, "storygraph", "StoryGraph")
+        plain = Owns(cfg, log, "fable", "Fable"); plain.supports_owned = False; cfg["fable"]["enabled"] = True
+        dune, emma = Book(10, "Dune", status="read", slug="dune"), Book(12, "Emma", status="want", book_id=42)
+        eng = Engine(cfg, [gr, sg, plain], State(os.path.join(tmp, "s.db")), log, hardcover=NoLib([dune, emma]))
+        eng.bookorbit = lambda: Client()
+        for b in (dune, emma):
+            eng.state.upsert_book(b, time.time())
+        eng.state.save_link(10, "goodreads", remote_id="G10"); eng.state.save_link(10, "storygraph", remote_id="S10")
+        eng.state.save_link(10, "fable", remote_id="F10")
+        eng.state.save_link(12, "goodreads", remote_id="G12")      # Emma: not linked on StoryGraph yet
+        sg.owned.add("S10")                                       # already owned there
+        eng.start_bookorbit_owned()
+        for _ in range(100):
+            if not eng.own_job["running"]: break
+            time.sleep(0.05)
+        j = eng.own_job
+        assert sorted(gr.calls) == ["G10", "G12"] and sg.calls == ["S10"] and plain.calls == [], (gr.calls, sg.calls)
+        assert (j["marked"], j["already"], j["not_linked"], j["not_in_hardcover"], j["failed"]) == (2, 1, 1, 1, 0), j
+        # a second run asks nobody again
+        gr.calls.clear(); sg.calls.clear()
+        eng.start_bookorbit_owned()
+        for _ in range(100):
+            if not eng.own_job["running"]: break
+            time.sleep(0.05)
+        assert gr.calls == [] and sg.calls == [] and eng.own_job["already"] == 3
+        # a dead session stops that service, the others carry on
+        eng.state.set("owned_marked", "[]"); gr.owned.clear(); gr.fail = AuthError("cookies expired")
+        eng.start_bookorbit_owned()
+        for _ in range(100):
+            if not eng.own_job["running"]: break
+            time.sleep(0.05)
+        assert len(gr.calls) == 1 and eng.own_job["failed"] == 1 and sg.calls == ["S10"], (gr.calls, eng.own_job)
+        # the setting: off -> nothing starts on its own
+        eng.state.set("owned_checked_at", "0"); eng.bookorbit_owned_auto()
+        assert not eng.own_job["running"]
+
+
 def test_ratings_and_reviews_from_hardcover():
     from heliograph.config import Config
     from heliograph.engine import Engine
@@ -452,7 +519,7 @@ def test_books_you_have_read_keep_your_hardcover_edition():
             bo.HardcoverLookup = orig
 
 
-ALL = [test_your_library_record_of_a_book_wins, test_books_you_have_read_keep_your_hardcover_edition, test_ratings_and_reviews_from_hardcover, test_set_aside_a_book_hardcover_doesnt_have, test_kind_and_edition_rules, test_plan_book, test_engine_scan_apply_and_ebook_switch,
+ALL = [test_mark_bookorbit_books_as_owned, test_your_library_record_of_a_book_wins, test_books_you_have_read_keep_your_hardcover_edition, test_ratings_and_reviews_from_hardcover, test_set_aside_a_book_hardcover_doesnt_have, test_kind_and_edition_rules, test_plan_book, test_engine_scan_apply_and_ebook_switch,
        test_scan_pauses_at_hardcovers_daily_limit, test_parse_ref, test_find_on_hardcover_and_paste,
        test_apply_uses_a_ticked_suggestion_and_hardcover_url]
 
