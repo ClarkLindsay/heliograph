@@ -9,7 +9,8 @@ out=$(awk -v v="$v" '
 ' "$(dirname "$0")/../CHANGELOG.md" | sed -e '/./,$!d' | awk '
   # GitHub release notes keep single line breaks, so a wrapped line is joined back onto the one before it
   /^[ \t]*$/ { if (buf != "") print buf; buf = ""; print; next }
-  /^[ \t]*([-*#]|[0-9]+\.)/ { if (buf != "") print buf; buf = $0; next }
+  # a new item or heading: "- ", "* ", "1. " or "#" (a line that starts **bold** is a wrapped line, not an item)
+  /^[ \t]*([-*]|[0-9]+\.)[ \t]/ || /^#/ { if (buf != "") print buf; buf = $0; next }
   { sub(/^[ \t]+/, ""); buf = (buf == "") ? $0 : buf " " $0 }
   END { if (buf != "") print buf }
 ')

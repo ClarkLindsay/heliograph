@@ -4,6 +4,8 @@ What changed in each release of Heliograph. Each release's notes on GitHub are t
 
 ## Unreleased
 
+## 0.6.4 (2026-11-27)
+
 ### Added
 - **Progress that goes backwards waits for you.** If Hardcover says you're further back in a book you're still reading
   (an app that reset its position, say), Heliograph doesn't send it. The book is flagged: a banner on the Dashboard,

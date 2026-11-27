@@ -47,9 +47,11 @@ other services. All credit for working out how to talk to each service goes to t
 | Book added as Currently Reading | Currently-reading shelf |
 | Want to Read | Want/Interested shelf (toggle) |
 | Progress changes | Page (mapped to that service's edition page count) or %, throttled with step sizes. Audiobooks tracked by time are sent as % |
+| Progress goes backwards | Held until you confirm it (0.6.4+): see [Behaviour notes](#behaviour-notes) |
 | Marked Read | Read shelf, finish date (Goodreads/Pagebound), then your rating |
 | Rating changed later | Rating re-pushed |
 | Review written or edited | Review text and spoiler flag (Goodreads, StoryGraph, Fable, Pagebound). Off by default: **Sync reviews** (0.6.0+) |
+| Book on your **Owned** list | Marked as owned (Goodreads, StoryGraph, Pagebound). On by default: **Sync owned books** (0.6.4+) |
 | Paused / DNF | Off by default (Goodreads/StoryGraph/Pagebound take both, Fable DNF only) |
 
 Ratings: Goodreads quarter stars, StoryGraph quarter stars (review form, other review fields untouched), Fable as-is,
@@ -555,10 +557,30 @@ copied to the BookOrbit books linked to them. The first run goes through your wh
   do, and then every rating is copied. Keep BookOrbit's status and progress sync on; that's how your reading reaches
   Hardcover.
 
+**Mark as owned** (0.6.4+): your BookOrbit books are copies you own. **Tools → BookOrbit → Mark as owned** adds each
+one that's in your Hardcover library to your Hardcover **Owned** list and marks it as owned on Goodreads, StoryGraph
+and Pagebound. Books already marked are remembered and skipped. To keep up with books you add later, turn on **Your
+BookOrbit books are copies you own…** in Settings → BookOrbit (off by default; checked every 6 hours). A BookOrbit
+book that isn't in your Hardcover library isn't on your services either, so it's skipped.
+
 **Don't run two StoryGraph syncs:** BookOrbit can sync to StoryGraph itself. If Heliograph handles StoryGraph, keep
 that off in BookOrbit.
 
 ## Behaviour notes
+- **Progress that goes backwards (0.6.4+)** isn't sent until you confirm it. If Hardcover says you're further back in
+  a book you're still reading (by at least your progress step), for instance because an app reset its position:
+  - the services keep the further position, and the book's status and rating still sync as usual;
+  - the Dashboard shows a banner, the Books filter has **↩ Progress went back**, and the book itself asks: **Yes, send
+    it** or **No, keep my services' progress**. Keeping holds until Hardcover's progress changes again.
+  - Starting a re-read (Read back to Currently Reading) isn't counted as going back.
+  - Switching between the audiobook and the ebook compares percentages, so a format change isn't mistaken for a jump.
+- **Owned books (0.6.4+, on by default):** books on your Hardcover **Owned** list are marked as owned on Goodreads
+  (*I own a copy of this edition*, for the edition Heliograph linked), StoryGraph and Pagebound. Nothing else about the
+  book changes.
+  - Take a book off the list and it's unmarked, but only where Heliograph marked it. A book you marked owned on a
+    service yourself is never unmarked.
+  - Fable has no way to mark a book as owned.
+  - Hardcover's Owned list is read once per cycle (one request). Turn it off with **Sync owned books**.
 - **Reviews (0.6.0+, off by default):** with **Sync reviews** on, a review you write or edit on Hardcover is sent to
   Goodreads, StoryGraph, Fable and Pagebound with its spoiler flag (StoryGraph has none).
   - A review a service already has isn't sent again, so reviews you imported long ago are left as they are.
@@ -692,10 +714,15 @@ Images are built by GitHub Actions and published to `ghcr.io/clarklindsay/heliog
 | Push a tag `vX.Y.Z` | `X.Y.Z`, `X.Y`, `X` (from 1.0 on), `latest`. Also creates a GitHub Release with `docker-compose.yml` and `env.example` attached |
 | Pull request | Tests and a test build only, nothing is published |
 
+Every user-facing change gets a line under **Unreleased** in [`CHANGELOG.md`](CHANGELOG.md), in the commit that
+makes it.
+
 To cut a release:
 1. Set `__version__` in `heliograph/__init__.py` (the workflow fails if it doesn't match the tag).
-2. Commit and push.
-3. Run `git tag v0.2.0` and then `git push origin v0.2.0`.
+2. In `CHANGELOG.md`, rename `## Unreleased` to `## X.Y.Z (date)` and start a fresh `## Unreleased` above it. The
+   workflow fails if the tag has no section, and that section becomes the release notes.
+3. Commit and push.
+4. Run `git tag vX.Y.Z` and then `git push origin vX.Y.Z`.
 
 **Stack:**
 - Python 3.12 standard-library HTTP server with a JSON API, and a single-file HTML/JS UI (`heliograph/web_index.html`).
