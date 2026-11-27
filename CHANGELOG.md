@@ -4,6 +4,8 @@ What changed in each release of Heliograph. Each release's notes on GitHub are t
 
 ## Unreleased
 
+## 0.6.5 (2026-11-27)
+
 ### Added
 - **Favorites sync** (on by default): books on your Hardcover **Favorites** list go to StoryGraph's favorites, your
   Fable **Favorites** list, and a **favorites** shelf on Goodreads and Pagebound (made the first time a book goes on
