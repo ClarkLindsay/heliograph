@@ -4,6 +4,12 @@ What changed in each release of Heliograph. Each release's notes on GitHub are t
 
 ## Unreleased
 
+### Added
+- **Favorites sync** (on by default): books on your Hardcover **Favorites** list go to StoryGraph's favorites, your
+  Fable **Favorites** list, and a **favorites** shelf on Goodreads and Pagebound (made the first time a book goes on
+  it; the Goodreads shelf name is a setting). Take one off the list and it comes off where Heliograph put it, never
+  where you did. Turn it off with **Settings → Sync favorites**.
+
 ## 0.6.4 (2026-11-27)
 
 ### Added

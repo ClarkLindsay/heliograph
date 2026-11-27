@@ -272,6 +272,45 @@ class Pagebound(Provider):
         if not (code and 200 <= code < 300):
             raise ProviderError(f"Pagebound status update -> HTTP {code}")
 
+    supports_favorites = True
+    FAVORITES = "favorites"
+
+    def _favorites_shelf(self, create=False):
+        code, shelves = self._req("/api/v1/shelves")
+        if code != 200 or not isinstance(shelves, list):
+            raise ProviderError(f"Pagebound: couldn't load your shelves (HTTP {code})")
+        mine = next((s for s in shelves if (s.get("name") or "").strip().lower() == self.FAVORITES), None)
+        if mine or not create:
+            return mine and mine["id"]
+        code, made = self._req("/api/v1/shelves", "POST", {"shelf": {"name": self.FAVORITES}})
+        if not (code and 200 <= code < 300) or not (made or {}).get("id"):
+            raise ProviderError(f"Pagebound: couldn't make a favorites shelf (HTTP {code})")
+        return made["id"]
+
+    @staticmethod
+    def _shelf_ids(existing):
+        return [s.get("id", s.get("shelf_id")) if isinstance(s, dict) else s for s in existing.get("shelves") or []]
+
+    def set_favorite(self, remote_id, book, on=True):
+        existing, _ = self._user_book(remote_id)
+        if not existing:
+            raise ProviderError("Pagebound: the book isn't on your shelves")
+        fav = self._favorites_shelf(create=on)
+        ids = self._shelf_ids(existing)
+        if not fav or (fav in ids) == bool(on):
+            return False
+        status = STATUS_BY.get(existing.get("status"))
+        if not status:
+            raise ProviderError(f"Pagebound: unknown status {existing.get('status')!r}")
+        body = status_payload(status, existing)          # everything as it is, the favorites shelf added/removed
+        body["shelf_ids"] = ids + [fav] if on else [i for i in ids if i != fav]
+        code, _d = self._req(f"/api/v1/user_books/{existing['id']}", "PUT", body)
+        if not (code and 200 <= code < 300):
+            raise ProviderError(f"Pagebound favorites -> HTTP {code}")
+        if (fav in self._shelf_ids(self._user_book(remote_id)[0] or {})) != bool(on):
+            raise ProviderError("Pagebound didn't keep the change to favorites")
+        return True
+
     supports_owned = True
 
     def set_owned(self, remote_id, book, owned=True):

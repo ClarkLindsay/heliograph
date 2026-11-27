@@ -157,14 +157,19 @@ class HardcoverClient:
         return self._books({"user_id": {"_eq": self.user_id}})
 
     # ---- your "Owned" list: what Hardcover shows as books you own (user_books.owned isn't connected to it)
-    def owned_list(self):
-        """(the Owned list's id, {book id: list_book id}); (None, {}) if your account has no Owned list."""
-        d = self._q("""query { me { lists(where: {slug: {_eq: "owned"}}) { id list_books { id book_id } } } }""")
+    def list_books(self, slug):
+        """One of your lists by slug ("owned", "favorites"): (its id, {book id: list_book id}); (None, {}) if none."""
+        d = self._q("""query($s: String!) { me { lists(where: {slug: {_eq: $s}}) { id list_books { id book_id } } } }""",
+                    {"s": slug})
         me = d["me"][0] if isinstance(d.get("me"), list) else d.get("me") or {}
         lst = (me.get("lists") or [None])[0]
         if not lst:
             return None, {}
         return lst["id"], {lb["book_id"]: lb["id"] for lb in lst.get("list_books") or []}
+
+    def owned_list(self):
+        """(the Owned list's id, {book id: list_book id}); (None, {}) if your account has no Owned list."""
+        return self.list_books("owned")
 
     def add_owned(self, book_id, edition_id=None):
         """Put a book on your Owned list. -> True if it was added, False if it was already there. Verifies."""

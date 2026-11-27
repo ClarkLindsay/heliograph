@@ -40,6 +40,7 @@ SPEC = {
         ("cookie_refresh_url", "Cookie Auto-Refresh URL", "str"),
         ("cookie_refresh_token", "Cookie Auto-Refresh Token", "secret"),
         ("cookie_refresh_account", "Cookie refresher account (its ACCOUNTS name; blank = default)", "str"),
+        ("favorites_shelf", "Shelf for your Hardcover Favorites (Goodreads has no favorites of its own; made the first time a book goes on it)", "str"),
         ("cookie", "Goodreads cookie (fallback)", "secret"),
         ("user_agent", "User-Agent override", "str"),
         ("request_delay_seconds", "Seconds between Goodreads requests (fewer WAF challenges)", "int"),
@@ -83,6 +84,7 @@ SPEC = {
         ("sync_ratings", "Sync ratings when marked Read", "bool"),
         ("sync_reviews", "Sync reviews: your Hardcover review goes to Goodreads, StoryGraph, Fable and Pagebound", "bool"),
         ("sync_owned", "Sync owned books: books on your Hardcover Owned list are marked as owned on Goodreads, StoryGraph and Pagebound (taking one off the list unmarks it where Heliograph marked it)", "bool"),
+        ("sync_favorites", "Sync favorites: books on your Hardcover Favorites list go to StoryGraph's favorites, your Fable Favorites list, and a favorites shelf on Goodreads and Pagebound (taking one off takes it off where Heliograph added it)", "bool"),
         ("overwrite_reviews", "…even replacing a different review you wrote on a service yourself (off: that one is left alone)", "bool"),
         ("remove_from_services", "When you remove a book from Hardcover, also remove it from your services "
                                  "(off / want = only Want to Read books / all = any status, deletes ratings and reviews there too)",

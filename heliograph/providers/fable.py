@@ -223,6 +223,45 @@ class Fable(Provider):
         if not (200 <= (code or 0) < 300 or code == 409):
             raise ProviderError(f"Fable status update -> HTTP {code}")
 
+    supports_favorites = True
+    FAVORITES = "favorites"
+
+    def _favorites_list(self):
+        code, d = self._req(f"/api/v2/users/{self._uid()}/book_lists?limit=50&offset=0&media_type=book")
+        if code != 200 or not d or "results" not in d:
+            raise ProviderError(f"Fable: could not load your lists (HTTP {code})")
+        return next((l["id"] for l in d["results"] if (l.get("name") or "").strip().lower() == self.FAVORITES), None)
+
+    def _on_list(self, lid, remote_id):
+        offset = 0
+        while True:
+            code, d = self._req(f"/api/v2/users/{self._uid()}/book_lists/{lid}/books?limit=50&offset={offset}")
+            if code != 200:
+                raise ProviderError(f"Fable: couldn't read your Favorites (HTTP {code})")
+            res = (d or {}).get("results") or []
+            if any(((x.get("book") or {}).get("id")) == remote_id for x in res):
+                return True
+            if len(res) < 50:
+                return False
+            offset += 50
+
+    def set_favorite(self, remote_id, book, on=True):
+        lid = self._favorites_list()
+        if not lid:
+            if not on:
+                return False
+            raise ProviderError("Fable: make a list called Favorites first")
+        if self._on_list(lid, remote_id) == bool(on):
+            return False
+        code, _ = self._req(f"/api/v2/users/{self._uid()}/book_lists/book", "POST", {
+            "type": "multiselect", "book_id": remote_id, "book_list_ids": [lid] if on else [],
+            "exclude_from": [] if on else [lid]})
+        if not (200 <= (code or 0) < 300 or code == 409):
+            raise ProviderError(f"Fable favorites -> HTTP {code}")
+        if self._on_list(lid, remote_id) != bool(on):
+            raise ProviderError("Fable didn't keep the change to Favorites")
+        return True
+
     def set_progress(self, remote_id, book, by_pages, remote_pages):
         body = {"status": "reading", "social_accounts": []}
         total = remote_pages or book.total_pages

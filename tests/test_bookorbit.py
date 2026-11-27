@@ -297,7 +297,11 @@ class OwnedHC(NoLib):
     """A Hardcover account with an Owned list."""
     def __init__(self, books=(), owned=()):
         super().__init__(books); self.owned, self.adds = set(owned), []
+    favorites = ()
     def owned_list(self): return 1, {i: 100 + i for i in self.owned}
+    def list_books(self, slug):
+        if slug == "owned": return self.owned_list()
+        return (2, {i: 200 + i for i in self.favorites}) if slug == "favorites" else (None, {})
     def add_owned(self, book_id, edition_id=None):
         if book_id in self.owned: return False
         self.owned.add(book_id); self.adds.append(book_id); return True
@@ -320,6 +324,13 @@ def owned_setup(tmp, books, owned=()):
             if self.fail: raise self.fail
             if (rid in self.owned) == owned: return False
             (self.owned.add if owned else self.owned.discard)(rid); return True
+        supports_favorites = True
+        favs, fav_calls = None, None
+        def set_favorite(self, rid, b, on=True):
+            if self.favs is None: self.favs, self.fav_calls = set(), []
+            self.fav_calls.append(rid if on else "-" + rid)
+            if (rid in self.favs) == on: return False
+            (self.favs.add if on else self.favs.discard)(rid); return True
 
     cfg = Config(os.path.join(tmp, "c.json"))
     cfg["bookorbit"].update(url="http://bo", api_key="k")
@@ -407,6 +418,16 @@ def test_hardcover_owned_list_syncs_to_services():
         hc.owned = {7}; gr.calls.clear()
         eng.sync_owned(); wait(eng, "_owned_thread")
         assert gr.calls == []                                     # the setting off: nothing
+        # favorites: the same, from your Favorites list, kept apart from owned
+        hc.favorites = {7}
+        eng.sync_owned(); wait(eng, "_owned_thread")
+        assert gr.fav_calls == ["G10"] and sg.fav_calls == ["S10"] and gr.calls == [], (gr.fav_calls, gr.calls)
+        hc.favorites = set(); gr.fav_calls.clear(); sg.fav_calls.clear()
+        eng.sync_owned(); wait(eng, "_owned_thread")
+        assert gr.fav_calls == ["-G10"] and sg.fav_calls == ["-S10"] and not gr.favs
+        eng.config["common"]["sync_favorites"] = False; hc.favorites = {7}; gr.fav_calls.clear()
+        eng.sync_owned(); wait(eng, "_owned_thread")
+        assert gr.fav_calls == []
 
 
 def test_ratings_and_reviews_from_hardcover():

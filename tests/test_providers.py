@@ -740,7 +740,23 @@ def test_env_overrides():
                 del os.environ[k]
 
 
-ALL = [test_matching, test_page_mapping, test_goodreads_helpers, test_goodreads_refresher_on_waf,
+def test_goodreads_favorites_shelf_that_does_not_exist_yet():
+    """Goodreads shows your whole library for a shelf that doesn't exist: that isn't "already on it"."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        c = cfg(tmp); c["goodreads"].update(enabled=True, cookie="a=1")
+        g = gr.Goodreads(c, LOG)
+        g.profile_url = lambda: "https://www.goodreads.com/user/show/1"
+        row = ('<tr class="bookalike review"><td class="field title"><a href="/book/show/42">Dune</a></td></tr>')
+        missing = Resp(200, "<html>" + row + "</html>", url="x")
+        real = Resp(200, '<a title="x" class="selectedShelf" href="/review/list/1-x?tag=favorites&amp;view=table">'
+                    + row + "</a>", url="x")
+        g._req = lambda *a, **k: missing
+        assert g._on_shelf("favorites", "42") is False
+        g._req = lambda *a, **k: real
+        assert g._on_shelf("favorites", "42") is True and g._on_shelf("favorites", "7") is False
+
+
+ALL = [test_goodreads_favorites_shelf_that_does_not_exist_yet, test_matching, test_page_mapping, test_goodreads_helpers, test_goodreads_refresher_on_waf,
        test_goodreads_refresher_accounts, test_profile_links, test_goodreads_cools_down_after_uncleared_waf, test_goodreads_pacing_and_reuse,
        test_goodreads_bootstraps_empty_cookie_from_refresher, test_goodreads_auth_failure_without_refresher,
        test_goodreads_writes_and_headers, test_goodreads_date_finished_flow, test_goodreads_finished_sessions_logic,

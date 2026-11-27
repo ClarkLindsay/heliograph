@@ -52,6 +52,7 @@ other services. All credit for working out how to talk to each service goes to t
 | Rating changed later | Rating re-pushed |
 | Review written or edited | Review text and spoiler flag (Goodreads, StoryGraph, Fable, Pagebound). Off by default: **Sync reviews** (0.6.0+) |
 | Book on your **Owned** list | Marked as owned (Goodreads, StoryGraph, Pagebound). On by default: **Sync owned books** (0.6.4+) |
+| Book on your **Favorites** list | StoryGraph favorites, Fable's *Favorites* list, a *favorites* shelf on Goodreads and Pagebound. On by default: **Sync favorites** (0.6.5+) |
 | Paused / DNF | Off by default (Goodreads/StoryGraph/Pagebound take both, Fable DNF only) |
 
 Ratings: Goodreads quarter stars, StoryGraph quarter stars (review form, other review fields untouched), Fable as-is,
@@ -581,6 +582,10 @@ that off in BookOrbit.
     service yourself is never unmarked.
   - Fable has no way to mark a book as owned.
   - Hardcover's Owned list is read once per cycle (one request). Turn it off with **Sync owned books**.
+- **Favorites (0.6.5+, on by default):** books on your Hardcover **Favorites** list go to StoryGraph's favorites, your
+  Fable **Favorites** list (make one in Fable first), and a **favorites** shelf on Goodreads and Pagebound, made the
+  first time a book goes on it. Goodreads has no favorites of its own; the shelf name is a setting (**Shelf for your
+  Hardcover Favorites**). As with owned, a book taken off the list comes off only where Heliograph put it.
 - **Reviews (0.6.0+, off by default):** with **Sync reviews** on, a review you write or edit on Hardcover is sent to
   Goodreads, StoryGraph, Fable and Pagebound with its spoiler flag (StoryGraph has none).
   - A review a service already has isn't sent again, so reviews you imported long ago are left as they are.

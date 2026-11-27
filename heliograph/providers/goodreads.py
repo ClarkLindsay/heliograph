@@ -770,6 +770,44 @@ class Goodreads(Provider):
     def get_review(self, remote_id, book):
         return self._review_editor(remote_id)[2]["review_text"] or None
 
+    supports_favorites = True
+
+    def _favorites_shelf(self):
+        name = (self.cfg.get("favorites_shelf") or "favorites").strip().lower()
+        return re.sub(r"[^a-z0-9_-]+", "-", name).strip("-") or "favorites"
+
+    def _on_shelf(self, shelf, remote_id):
+        m = re.search(r"/user/show/(\d+)", self.profile_url() or "")
+        if not m:
+            raise ProviderError("Couldn't find your Goodreads user id: check the Goodreads login in Settings")
+        for page in range(1, 51):
+            r = self._req("GET", f"{BASE}/review/list/{m.group(1)}", params={
+                "shelf": shelf, "per_page": "100", "view": "table", "page": str(page)})
+            if r.status_code != 200:
+                raise ProviderError(f"Goodreads shelf '{shelf}' -> HTTP {r.status_code}")
+            # a shelf that doesn't exist (yet) shows your whole library: only a real one is marked as the selected shelf
+            if page == 1 and not re.search(r'class="selectedShelf"[^>]*[?&;]tag=' + re.escape(shelf) + r'(?:&|")', r.text):
+                return False
+            rows = parse_read_list(r.text)
+            if any(str(x["id"]) == str(remote_id) for x in rows):
+                return True
+            if len(rows) < 100:
+                return False
+        return False
+
+    def set_favorite(self, remote_id, book, on=True):
+        shelf = self._favorites_shelf()
+        if self._on_shelf(shelf, remote_id) == bool(on):
+            return False
+        self._post(BASE + "/shelf/add_to_shelf", {"book_id": remote_id, "name": shelf, "a": "" if on else "remove"}, {
+            **self.XHR, "X-Prototype-Version": "1.7", "Referer": BASE + "/",
+            "Accept": "text/javascript, text/html, application/xml, text/xml, */*",
+            "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8"})
+        self._page_cache.clear()
+        if self._on_shelf(shelf, remote_id) != bool(on):
+            raise ProviderError(f"Goodreads didn't keep the change to your '{shelf}' shelf")
+        return True
+
     supports_owned = True
 
     def set_owned(self, remote_id, book, owned=True):

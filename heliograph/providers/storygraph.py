@@ -210,6 +210,28 @@ class StoryGraph(Provider):
             raise ProviderError("StoryGraph: CSRF token not found")
         return info
 
+    supports_favorites = True
+
+    def set_favorite(self, remote_id, book, on=True):
+        add, rm = f"/favorites/add/{remote_id}", f"/favorites/remove/{remote_id}"
+        page = self._req("GET", f"/books/{remote_id}")
+        if page.status_code != 200:
+            raise ProviderError(f"StoryGraph: book page HTTP {page.status_code}")
+        if (rm in page.text) == bool(on):
+            return False
+        if (add if on else rm) not in page.text:
+            raise ProviderError("StoryGraph: no favorites button on the book page")
+        csrf = _csrf(page.text)
+        if not csrf:
+            raise ProviderError("StoryGraph: CSRF token not found")
+        r = self._req("POST" if on else "DELETE", (add if on else rm) + "?from_book_page=true",
+                      data={"authenticity_token": csrf}, headers=self._xhr(remote_id, csrf))
+        if r.status_code != 200 or r.sign_in_redirect:
+            raise ProviderError(f"StoryGraph favorites -> HTTP {r.status_code}")
+        if (rm in self._req("GET", f"/books/{remote_id}").text) != bool(on):
+            raise ProviderError("StoryGraph didn't keep the change to favorites")
+        return True
+
     supports_owned = True
 
     def set_owned(self, remote_id, book, owned=True):

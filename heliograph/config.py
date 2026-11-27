@@ -22,6 +22,7 @@ DEFAULTS = {
         "user_agent": "",             # blank = same Firefox UA ShelfSync uses
         "request_delay_seconds": 3,   # minimum gap between Goodreads requests; bursts are what trigger WAF challenges
         "waf_cooldown_minutes": 15,   # after a challenge the refresher can't clear, leave Goodreads alone this long
+        "favorites_shelf": "favorites",  # your Hardcover Favorites go on this shelf (made the first time it's used)
         "home_url": "",               # where the dashboard icon links; blank = the service's homepage
     },
     "storygraph": {"enabled": False, "session_cookie": "", "remember_user_token": "", "home_url": ""},
@@ -66,6 +67,7 @@ DEFAULTS = {
         "sync_ratings": True,
         "sync_reviews": False,               # send your Hardcover reviews to the services
         "sync_owned": True,                  # books on your Hardcover Owned list are marked owned on the services
+        "sync_favorites": True,              # books on your Hardcover Favorites list go to each service's favorites
         "overwrite_reviews": False,          # ...even over a review you wrote there yourself
         "initial_sync": "baseline",          # baseline = record library, push only later changes | import_all
         "verbose_logging": False,

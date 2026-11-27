@@ -123,7 +123,7 @@ class Engine(BookOrbitJobs):
             try:
                 self.sync_owned()
             except Exception as e:
-                self.log.warning("Couldn't check your Hardcover Owned list: %s", e)
+                self.log.warning("Couldn't check your Hardcover Owned and Favorites lists: %s", e)
             try:
                 self.bookorbit_owned_auto()
             except Exception as e:
@@ -552,34 +552,59 @@ class Engine(BookOrbitJobs):
             self._covers[ub_id] = self.hc().cover_url(b) if b else None
         return self._covers[ub_id]
 
-    # ---- owned: your Hardcover Owned list -> "owned" on the services that have it
+    # ---- your Hardcover lists -> the services: Owned -> "owned", Favorites -> each service's favorites
+    # kind: (Hardcover list slug, setting, provider flag, provider method, kv prefix, words for the log)
+    LISTS = {
+        "owned": ("owned", "sync_owned", "supports_owned", "set_owned", "owned",
+                  ("marked as owned", "no longer marked as owned", "Owned")),
+        "favorites": ("favorites", "sync_favorites", "supports_favorites", "set_favorite", "favorite",
+                      ("added to favorites", "taken off favorites", "Favorites")),
+    }
+
     def owned_providers(self):
-        return [p for p in self.providers if p.enabled and getattr(p, "supports_owned", False)]
+        return self.list_providers("owned")
+
+    def list_providers(self, kind):
+        flag = self.LISTS[kind][2]
+        return [p for p in self.providers if p.enabled and getattr(p, flag, False)]
 
     def sync_owned(self):
-        """After each cycle: books on your Hardcover Owned list get marked owned on the services; a book you take off
-        the list is unmarked where Heliograph marked it. Runs in the background (a first run can be long)."""
-        if self.dry or not self.common.get("sync_owned", True):
+        """After each cycle: books on your Hardcover Owned and Favorites lists are marked on the services (owned,
+        favorites); a book you take off a list is unmarked where Heliograph marked it, never where you did. Runs in the
+        background (a first run can be long). One Hardcover request per list."""
+        if self.dry:
             return
         t = getattr(self, "_owned_thread", None)
         if t and t.is_alive():
             return
-        provs = self.owned_providers()
-        if not provs:
-            return
-        _, have = self.hc().owned_list()
-        try:
-            prev = json.loads(self.state.get("hc_owned") or "null")
-        except ValueError:
-            prev = None
-        self._owned_thread = threading.Thread(target=self._sync_owned, args=(set(have), prev, provs), daemon=True,
-                                              name="owned-sync")
-        self._owned_thread.start()
+        work = []
+        for kind, (slug, setting, _flag, _m, prefix, _w) in self.LISTS.items():
+            provs = self.list_providers(kind)
+            if not provs or not self.common.get(setting, True):
+                continue
+            list_id, have = self.hc().list_books(slug)
+            if not list_id:
+                continue
+            try:
+                prev = json.loads(self.state.get(f"hc_{slug}") or "null")
+            except ValueError:
+                prev = None
+            work.append((kind, set(have), prev, provs))
+        if work:
+            self._owned_thread = threading.Thread(target=lambda: [self._sync_list(*w) for w in work], daemon=True,
+                                                  name="lists-sync")
+            self._owned_thread.start()
 
-    def _sync_owned(self, owned, prev, provs):
+    def _sync_list(self, kind, on_list, prev, provs):
+        slug, _setting, _flag, method, prefix, (did, undid, name) = self.LISTS[kind]
         books = {b.book_id: b for b in self.state.books() if b.book_id}
-        done, ours, dead, retry = self._owned_done(), self._owned_done("owned_ours"), set(), set()
-        gone = (set(prev) - owned) if prev is not None else set()      # first run: nothing counts as taken off
+        done, ours = self._owned_done(f"{prefix}_marked"), self._owned_done(f"{prefix}_ours")
+        dead, retry = set(), set()
+        gone = (set(prev) - on_list) if prev is not None else set()      # first run: nothing counts as taken off
+
+        def save():
+            self.state.set(f"{prefix}_marked", json.dumps(sorted(done)))
+            self.state.set(f"{prefix}_ours", json.dumps(sorted(ours)))
 
         def each(b, want):
             for p in provs:
@@ -591,42 +616,40 @@ class Engine(BookOrbitJobs):
                 key = f"{p.key}|{l['remote_id']}"
                 if (key in done) == want:
                     continue
-                if not want and key not in ours:           # marked owned by you, not Heliograph: left alone
-                    done.discard(key)
-                    self.state.set("owned_marked", json.dumps(sorted(done)))
+                if not want and key not in ours:           # you marked it there yourself, not Heliograph: left alone
+                    done.discard(key); save()
                     continue
                 try:
-                    with self.busy(p.key, timeout=120, why="syncing owned books"):
-                        changed = p.set_owned(l["remote_id"], b, want)
+                    with self.busy(p.key, timeout=120, why=f"syncing your {name} list"):
+                        changed = getattr(p, method)(l["remote_id"], b, want)
                     if want:
                         done.add(key)
                         if changed:
                             ours.add(key)
                     else:
                         done.discard(key); ours.discard(key)
-                    self.state.set("owned_marked", json.dumps(sorted(done)))
-                    self.state.set("owned_ours", json.dumps(sorted(ours)))
+                    save()
                     if changed:
-                        self.log.info("%s: '%s' %s", p.label, b.title, "marked as owned (it's on your Hardcover Owned list)"
-                                      if want else "no longer marked as owned (taken off your Hardcover Owned list)")
+                        self.log.info("%s: '%s' %s (%s your Hardcover %s list)", p.label, b.title, did if want else undid,
+                                      "it's on" if want else "taken off", name)
                 except AuthError as e:
                     dead.add(p.key); retry.add(b.book_id)
-                    self.log.error("%s: %s - owned books will be retried next cycle", p.label, e)
+                    self.log.error("%s: %s - your %s list will be retried next cycle", p.label, e, name)
                 except Exception as e:
                     retry.add(b.book_id)
-                    self.log.warning("%s: couldn't %s '%s': %s", p.label, "mark as owned" if want else "unmark as owned", b.title, e)
+                    self.log.warning("%s: '%s' not %s: %s", p.label, b.title, did if want else undid, e)
 
         try:
-            for i in owned:
+            for i in on_list:
                 if i in books:
                     each(books[i], True)
             for i in gone:
                 if i in books:
                     each(books[i], False)
             # a book whose unmarking failed stays "seen on the list", so the next run tries again
-            self.state.set("hc_owned", json.dumps(sorted(owned | (gone & retry))))
+            self.state.set(f"hc_{slug}", json.dumps(sorted(on_list | (gone & retry))))
         except Exception as e:
-            self.log.error("Syncing owned books failed: %s", e)
+            self.log.error("Syncing your Hardcover %s list failed: %s", name, e)
 
     def held_back(self):
         """{ub_id: {service: held}}: progress that went backwards, waiting for you (not the ones you said to keep)."""
